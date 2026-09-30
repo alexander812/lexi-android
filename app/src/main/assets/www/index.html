@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Lexi Bridge</title>
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #101014;
+            color: #f2f2f4;
+            font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            padding: 24px 16px 40px;
+        }
+        main { width: 100%; max-width: 560px; }
+        h1 { font-size: 22px; margin: 0 0 12px; }
+        .status {
+            font-size: 14px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #1c1c22;
+            border: 1px solid #2a2a33;
+            margin: 0 0 16px;
+        }
+        .status.ok { border-color: #ffcc4a; color: #ffcc4a; }
+        .buttons { display: grid; gap: 10px; margin-bottom: 16px; }
+        button {
+            appearance: none;
+            border: 0;
+            border-radius: 12px;
+            padding: 14px 16px;
+            font-size: 16px;
+            font-weight: 600;
+            background: #ffcc4a;
+            color: #101014;
+            cursor: pointer;
+        }
+        button:active { transform: scale(0.98); }
+        .scan-output {
+            width: 100%;
+            min-height: 120px;
+            margin: 0 0 16px;
+            padding: 12px;
+            border-radius: 10px;
+            background: #1c1c22;
+            color: #f2f2f4;
+            border: 1px solid #2a2a33;
+            font-size: 14px;
+            line-height: 1.5;
+            resize: vertical;
+        }
+        .log {
+            margin: 0;
+            padding: 12px;
+            min-height: 120px;
+            border-radius: 10px;
+            background: #08080a;
+            border: 1px solid #2a2a33;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Lexi Bridge</h1>
+    <p id="status" class="status">Проверяю мост…</p>
+    <div class="buttons">
+        <button type="button" data-vibrate="50">Вибрация 50 мс</button>
+        <button type="button" data-vibrate="500">Вибрация 500 мс</button>
+        <button type="button" id="device-info">Инфо об устройстве</button>
+        <button type="button" id="scan-text">Сканировать текст (ru)</button>
+    </div>
+    <textarea id="scan-output" class="scan-output" placeholder="Результат распознавания"></textarea>
+    <pre id="log" class="log"></pre>
+</main>
+<script src="bridge.js"></script>
+<script>
+    var statusEl = document.getElementById('status');
+    var logEl = document.getElementById('log');
+
+    function log(message) {
+        var line = new Date().toLocaleTimeString() + '  ' + message;
+        logEl.textContent = line + '\n' + logEl.textContent;
+    }
+
+    if (window.nativeBridge.available) {
+        statusEl.textContent = 'Мост активен: window.AndroidBridge';
+        statusEl.classList.add('ok');
+    } else {
+        statusEl.textContent = 'Мост недоступен (браузер): вибрация через navigator.vibrate';
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-vibrate]'), function (button) {
+        button.addEventListener('click', function () {
+            var durationMs = Number(button.dataset.vibrate);
+            window.nativeBridge.vibrate(durationMs)
+                .then(function (result) { log('vibrate(' + durationMs + ') -> ' + JSON.stringify(result)); })
+                .catch(function (error) { log('vibrate(' + durationMs + ') -> ошибка: ' + error.message); });
+        });
+    });
+
+    document.getElementById('device-info').addEventListener('click', function () {
+        window.nativeBridge.deviceInfo()
+            .then(function (info) { log('deviceInfo -> ' + JSON.stringify(info)); })
+            .catch(function (error) { log('deviceInfo -> ошибка: ' + error.message); });
+    });
+
+    document.getElementById('scan-text').addEventListener('click', function () {
+        log('scanText(ru) -> запуск');
+        window.nativeBridge.call('scanText', { lang: 'ru' })
+            .then(function (result) {
+                document.getElementById('scan-output').value = result.text || '';
+                log(
+                    'scanText -> cancelled=' + Boolean(result.cancelled) +
+                    ', confidence=' + result.confidence +
+                    ', length=' + (result.text || '').length
+                );
+            })
+            .catch(function (error) { log('scanText -> ошибка: ' + error.message); });
+    });
+</script>
+</body>
+</html>
