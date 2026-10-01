@@ -29,6 +29,9 @@ class NativeBridge(
 ) {
 
     @JavascriptInterface
+    fun hasRecognition(): Boolean = runCatching { recognition.isAvailable() }.getOrDefault(false)
+
+    @JavascriptInterface
     fun call(requestId: String, method: String, paramsJson: String) {
         val params = parseParams(paramsJson)
         when (method) {

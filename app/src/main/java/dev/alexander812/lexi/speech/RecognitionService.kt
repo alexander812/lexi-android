@@ -3,6 +3,7 @@ package dev.alexander812.lexi.speech
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -63,7 +64,7 @@ class RecognitionService(private val activity: ComponentActivity) {
                 onOutcome(RecognizeOutcome.Failure(REASON_BUSY))
                 return@runOnUiThread
             }
-            if (!SpeechRecognizer.isRecognitionAvailable(activity)) {
+            if (!isAvailable()) {
                 onOutcome(RecognizeOutcome.Failure(REASON_NOT_AVAILABLE))
                 return@runOnUiThread
             }
@@ -86,13 +87,20 @@ class RecognitionService(private val activity: ComponentActivity) {
         }
     }
 
+    fun isAvailable(): Boolean =
+        SpeechRecognizer.isRecognitionAvailable(activity) || isOnDeviceAvailable()
+
+    private fun isOnDeviceAvailable(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(activity)
+
     private fun hasPermission(): Boolean =
         ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
     private fun startListening() {
         try {
-            val current = recognizer ?: SpeechRecognizer.createSpeechRecognizer(activity).also {
+            val current = recognizer ?: createRecognizer().also {
                 it.setRecognitionListener(listener)
                 recognizer = it
             }
@@ -102,6 +110,18 @@ class RecognitionService(private val activity: ComponentActivity) {
             listening = false
             deliver(RecognizeOutcome.Failure(REASON_FAILED))
         }
+    }
+
+    private fun createRecognizer(): SpeechRecognizer {
+        if (SpeechRecognizer.isRecognitionAvailable(activity)) {
+            return SpeechRecognizer.createSpeechRecognizer(activity)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return SpeechRecognizer.createOnDeviceSpeechRecognizer(activity)
+        }
+
+        throw IllegalStateException(REASON_NOT_AVAILABLE)
     }
 
     private fun buildIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
