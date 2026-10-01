@@ -13,6 +13,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import dev.alexander812.lexi.bridge.NativeBridge
 import dev.alexander812.lexi.ocr.TextScanner
+import dev.alexander812.lexi.speech.SpeechSynthesizer
 
 private const val ASSET_DOMAIN = "appassets.androidplatform.net"
 private const val LOCAL_START_URL = "https://$ASSET_DOMAIN/assets/www/index.html"
@@ -21,6 +22,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private lateinit var scanner: TextScanner
+    private lateinit var synthesizer: SpeechSynthesizer
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,7 +43,8 @@ class MainActivity : ComponentActivity() {
             .build()
 
         scanner = TextScanner(this)
-        webView.addJavascriptInterface(NativeBridge(this, webView, scanner), NativeBridge.NAME)
+        synthesizer = SpeechSynthesizer(this)
+        webView.addJavascriptInterface(NativeBridge(this, webView, scanner, synthesizer), NativeBridge.NAME)
 
         val startUrl = BuildConfig.WEB_START_URL.ifBlank { LOCAL_START_URL }
         val trustedHost = Uri.parse(startUrl).host
@@ -77,6 +80,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         scanner.release()
+        synthesizer.release()
         webView.destroy()
         super.onDestroy()
     }

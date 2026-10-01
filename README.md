@@ -1,6 +1,6 @@
 # lexi-android
 
-Android-приложение Lexi: WebView-обёртка веб-приложения (`https://alexander812.github.io/elemental/`) с мостом в нативный код. Создано из шаблона `android-webview-template`. Дополнительно к вибрации и информации об устройстве реализован метод моста `scanText` — распознавание текста с камеры через Tesseract4Android.
+Android-приложение Lexi: WebView-обёртка веб-приложения (`https://alexander812.github.io/elemental/`) с мостом в нативный код. Создано из шаблона `android-webview-template`. Дополнительно к вибрации и информации об устройстве реализованы методы моста `scanText` — распознавание текста с камеры через Tesseract4Android, и `speak` — озвучка текста через системный TextToSpeech.
 
 ## Стек
 
@@ -87,6 +87,19 @@ const result = await window.nativeBridge.call("scanText", { lang: "ru" });
 - Отмена съёмки — успешный ответ `{ text: "", cancelled: true }`; ошибки приходят как reject с кодом: `unsupported_language`, `busy`, `no_camera_app`, `decode_failed`, `model_download_failed`, `tesseract_init_failed`.
 - Перед распознаванием фото уменьшается до 2000px по большей стороне, разворачивается по EXIF и приводится к серой шкале с растяжением контраста по гистограмме (1%–99%); PSM — `AUTO`.
 
+## Метод моста speak
+
+```js
+const result = await window.nativeBridge.call("speak", { text: "Понедельник", lang: "ru" });
+// result: { spoken: true, utteranceId: "lexi-1" }
+```
+
+- `lang` — код языка из приложения: `ru`, `en`, `es`, `fr`, `it`, `de`, `zh` (внутри маппится на `Locale`).
+- Используется системный `TextToSpeech` (`android.speech.tts.TextToSpeech`); предыдущая фраза обрывается (`QUEUE_FLUSH`).
+- Пока TTS инициализируется, последняя фраза ждёт готовности и озвучивается после `onInit`.
+- Ошибки приходят как reject с кодом: `text_required`, `speech_unavailable`, `language_not_supported`, `speak_failed`, `superseded` (фраза вытеснена более новой).
+- В веб-приложении озвучка карточек сама выбирает способ: нативный `speak` при наличии моста, иначе Web Speech API браузера (`app/src/transport/speech.ts` в elemental).
+
 ## Модели Tesseract
 
 - `ru` (`rus.traineddata`, точная модель `tessdata_best`) и `en` (`eng.traineddata`, быстрая `tessdata_fast`) вшиты в `app/src/main/assets/tessdata` — работают офлайн сразу.
@@ -98,11 +111,13 @@ const result = await window.nativeBridge.call("scanText", { lang: "ru" });
 
 ```
 app/src/main/java/dev/alexander812/lexi/
-  MainActivity.kt              WebView, asset loader, back-навигация, wiring сканера
-  bridge/NativeBridge.kt       @JavascriptInterface-мост: vibrate, deviceInfo, scanText
+  MainActivity.kt              WebView, asset loader, back-навигация, wiring сканера и TTS
+  bridge/NativeBridge.kt       @JavascriptInterface-мост: vibrate, deviceInfo, scanText, speak
   ocr/TextScanner.kt           камера → препроцесс → Tesseract → результат
-app/src/main/assets/www/       демо-страница моста (кнопки вибрации, инфо, сканирование)
+  speech/SpeechSynthesizer.kt  TextToSpeech: языки, очередь до init, release
+app/src/main/assets/www/       демо-страница моста (кнопки вибрации, инфо, сканирование, озвучка)
 app/src/main/assets/tessdata/  вшитые модели ru и en
+app/src/main/res/mipmap-*/     иконка: эмблема на #050505 (адаптивная + legacy, округлённая и квадратная)
 app/webview.properties         URL веб-приложения: prod и dev
 ```
 

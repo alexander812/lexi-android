@@ -79,6 +79,11 @@
         <button type="button" id="scan-text">Сканировать текст (ru)</button>
     </div>
     <textarea id="scan-output" class="scan-output" placeholder="Результат распознавания"></textarea>
+    <textarea id="speak-text" class="scan-output" placeholder="Текст для озвучки">Привет, это Lexi</textarea>
+    <div class="buttons">
+        <button type="button" data-speak="ru">Озвучить (ru)</button>
+        <button type="button" data-speak="en">Озвучить (en)</button>
+    </div>
     <pre id="log" class="log"></pre>
 </main>
 <script src="bridge.js"></script>
@@ -111,6 +116,21 @@
         window.nativeBridge.deviceInfo()
             .then(function (info) { log('deviceInfo -> ' + JSON.stringify(info)); })
             .catch(function (error) { log('deviceInfo -> ошибка: ' + error.message); });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-speak]'), function (button) {
+        button.addEventListener('click', function () {
+            var lang = button.dataset.speak;
+            var text = document.getElementById('speak-text').value;
+            if (!text.trim()) {
+                log('speak(' + lang + ') -> пустой текст');
+                return;
+            }
+            log('speak(' + lang + ') -> ' + JSON.stringify(text));
+            window.nativeBridge.call('speak', { text: text, lang: lang })
+                .then(function (result) { log('speak -> ' + JSON.stringify(result)); })
+                .catch(function (error) { log('speak -> ошибка: ' + error.message); });
+        });
     });
 
     document.getElementById('scan-text').addEventListener('click', function () {

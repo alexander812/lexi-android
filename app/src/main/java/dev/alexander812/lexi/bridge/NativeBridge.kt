@@ -10,12 +10,15 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import dev.alexander812.lexi.ocr.ScanOutcome
 import dev.alexander812.lexi.ocr.TextScanner
+import dev.alexander812.lexi.speech.SpeakOutcome
+import dev.alexander812.lexi.speech.SpeechSynthesizer
 import org.json.JSONObject
 
 class NativeBridge(
     private val context: Context,
     private val webView: WebView,
     private val scanner: TextScanner,
+    private val synthesizer: SpeechSynthesizer,
 ) {
 
     @JavascriptInterface
@@ -31,6 +34,7 @@ class NativeBridge(
                 runCatching { deviceInfo() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
             )
             "scanText" -> requestScan(requestId, params)
+            "speak" -> requestSpeak(requestId, params)
             else -> respond(requestId, errorResponse("unknown_method: $method"))
         }
     }
@@ -53,6 +57,22 @@ class NativeBridge(
                     JSONObject().put("text", "").put("cancelled", true),
                 )
                 is ScanOutcome.Failure -> errorResponse(outcome.reason)
+            }
+            respond(requestId, response)
+        }
+    }
+
+    private fun requestSpeak(requestId: String, params: JSONObject) {
+        val text = params.optString("text")
+        val lang = params.optString("lang")
+        synthesizer.speak(text, lang) { outcome ->
+            val response = when (outcome) {
+                is SpeakOutcome.Success -> successResponse(
+                    JSONObject()
+                        .put("spoken", true)
+                        .put("utteranceId", outcome.utteranceId),
+                )
+                is SpeakOutcome.Failure -> errorResponse(outcome.reason)
             }
             respond(requestId, response)
         }
