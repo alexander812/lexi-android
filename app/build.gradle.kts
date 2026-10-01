@@ -80,4 +80,6 @@ dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.exifinterface)
     implementation(libs.tesseract4android)
+    implementation(libs.commons.compress)
+    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
 }

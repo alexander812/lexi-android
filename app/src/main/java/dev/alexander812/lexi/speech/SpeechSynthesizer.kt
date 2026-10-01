@@ -1,7 +1,9 @@
 package dev.alexander812.lexi.speech
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import java.util.Locale
 
 sealed interface SpeakOutcome {
@@ -28,15 +30,25 @@ class SpeechSynthesizer(context: Context) {
         engine = TextToSpeech(context.applicationContext) { status ->
             synchronized(this) {
                 if (status == TextToSpeech.SUCCESS) {
+                    Log.i(TAG, "engine ready")
                     state = State.Ready
+                    applyAudioAttributes()
                     flushPending()
                 } else {
+                    Log.w(TAG, "engine init failed: $status")
                     state = State.Unavailable
                     pending?.onOutcome?.invoke(SpeakOutcome.Failure(REASON_UNAVAILABLE))
                     pending = null
                 }
             }
         }
+    }
+
+    @Synchronized
+    fun isLanguageSupported(lang: String): Boolean? {
+        if (state == State.Initializing) return null
+        val engine = engine ?: return false
+        return engine.isLanguageAvailable(localeFor(lang)) >= TextToSpeech.LANG_AVAILABLE
     }
 
     @Synchronized
@@ -74,20 +86,31 @@ class SpeechSynthesizer(context: Context) {
         queued.onOutcome(speakNow(queued.text, queued.locale))
     }
 
+    private fun applyAudioAttributes() {
+        engine?.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+        )
+    }
+
     private fun speakNow(text: String, locale: Locale): SpeakOutcome {
         val engine = engine ?: return SpeakOutcome.Failure(REASON_UNAVAILABLE)
         val availability = engine.setLanguage(locale)
         if (availability == TextToSpeech.LANG_MISSING_DATA || availability == TextToSpeech.LANG_NOT_SUPPORTED) {
+            Log.w(TAG, "language unavailable: $locale ($availability)")
             return SpeakOutcome.Failure(REASON_LANGUAGE)
         }
         sequence += 1
         val utteranceId = "lexi-$sequence"
         val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-        return if (result == TextToSpeech.SUCCESS) {
-            SpeakOutcome.Success(utteranceId)
-        } else {
-            SpeakOutcome.Failure(REASON_SPEAK_FAILED)
+        if (result != TextToSpeech.SUCCESS) {
+            Log.w(TAG, "speak failed: $locale ($result)")
+            return SpeakOutcome.Failure(REASON_SPEAK_FAILED)
         }
+        Log.i(TAG, "speak queued: $locale, ${text.length} chars")
+        return SpeakOutcome.Success(utteranceId)
     }
 
     private fun localeFor(lang: String?): Locale {
@@ -96,6 +119,8 @@ class SpeechSynthesizer(context: Context) {
     }
 
     companion object {
+        private const val TAG = "LexiSpeech"
+
         private val LANGUAGE_LOCALES = mapOf(
             "ru" to Locale("ru", "RU"),
             "en" to Locale("en", "US"),

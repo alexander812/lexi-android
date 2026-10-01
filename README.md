@@ -1,6 +1,6 @@
 # lexi-android
 
-Android-приложение Lexi: WebView-обёртка веб-приложения (`https://alexander812.github.io/elemental/`) с мостом в нативный код. Создано из шаблона `android-webview-template`. Дополнительно к вибрации и информации об устройстве реализованы методы моста `scanText` — распознавание текста с камеры через Tesseract4Android, и `speak` — озвучка текста через системный TextToSpeech.
+Android-приложение Lexi: WebView-обёртка веб-приложения (`https://alexander812.github.io/elemental/`) с мостом в нативный код. Создано из шаблона `android-webview-template`. Дополнительно к вибрации и информации об устройстве реализованы методы моста `scanText` — распознавание текста с камеры через Tesseract4Android, и `speak` — озвучка: скачанный офлайн-нейроголос (sherpa-onnx + Piper) или системный TextToSpeech. Плюс методы управления голосами `ttsVoices`/`downloadVoice`/`deleteVoice`.
 
 ## Стек
 
@@ -8,6 +8,8 @@ Android-приложение Lexi: WebView-обёртка веб-приложе�
 - compileSdk/targetSdk 34, minSdk 26
 - `androidx.webkit` (WebViewAssetLoader), `androidx.activity`, `androidx.exifinterface`
 - `cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0` (JitPack), класс API — `com.googlecode.tesseract.android.TessBaseAPI`
+- `org.apache.commons:commons-compress:1.28.0` — распаковка tar.bz2 с голосами
+- `app/libs/sherpa-onnx-1.13.8.aar` (Apache-2.0, из GitHub-релизов k2-fsa/sherpa-onnx) — офлайн-синтез; APK ~87 МБ
 - APK собирается только под `arm64-v8a` и `armeabi-v7a` (эмулятор x86 не поддерживается)
 
 ## Быстрый старт
@@ -94,8 +96,25 @@ const result = await window.nativeBridge.call("speak", { text: "Понедель
 // result: { spoken: true, utteranceId: "lexi-1" }
 ```
 
-- `lang` — код языка из приложения: `ru`, `en`, `es`, `fr`, `it`, `de`, `zh` (внутри маппится на `Locale`).
-- Используется системный `TextToSpeech` (`android.speech.tts.TextToSpeech`); предыдущая фраза обрывается (`QUEUE_FLUSH`).
+- `lang` — код языка из приложения: `ru`, `en`, `es`, `fr`, `it`, `de`, `zh`.
+- Порядок выбора (`speech/SpeechService.kt`): скачанный офлайн-голос (sherpa-onnx) → системный `TextToSpeech` (`android.speech.tts.TextToSpeech`, `QUEUE_FLUSH`) → ошибка `voice_missing`.
+- В манифесте объявлен `<queries>` с `android.intent.action.TTS_SERVICE` — без него на Android 11+ (`targetSdk 30+`) TTS-движок не виден и инициализация падает (`speech_unavailable`).
+- Диагностика — логи `LexiSpeech` (`adb logcat -s LexiSpeech`).
+
+## Офлайн-голоса (ttsVoices / downloadVoice / deleteVoice)
+
+```js
+const { voices } = await window.nativeBridge.call("ttsVoices", {});
+// voices: [{ lang, id, title, sizeBytes, installed, downloading, progress, error }]
+
+await window.nativeBridge.call("downloadVoice", { lang: "ru" }); // резолвится по завершении
+await window.nativeBridge.call("deleteVoice", { lang: "ru" });
+```
+
+- Каталог — `speech/VoiceCatalog.kt` (Piper medium): ru `ru_RU-ruslan-medium` (Руслан), en `en_US-lessac-medium`, es `es_ES-sharvard-medium`, fr `fr_FR-siwis-medium`, it `it_IT-paola-medium`, de `de_DE-thorsten-medium`, zh `zh_CN-huayan-medium`; 64–80 МБ.
+- Архив качается из GitHub-релиза `k2-fsa/sherpa-onnx@tts-models` (доступен без VPN) в `cacheDir`, распаковывается commons-compress в `filesDir/tts/<id>` (`.onnx`, `tokens.txt`, `espeak-ng-data`), архив удаляется.
+- Пока идёт загрузка, `ttsVoices` возвращает `downloading: true` и `progress` (0..1) — веб опрашивает раз в секунду.
+- Синтез и воспроизведение — `speech/LocalTts.kt` (`OfflineTts` + `AudioTrack`); загруженная модель живёт в памяти до смены языка или удаления голоса.
 - Пока TTS инициализируется, последняя фраза ждёт готовности и озвучивается после `onInit`.
 - Ошибки приходят как reject с кодом: `text_required`, `speech_unavailable`, `language_not_supported`, `speak_failed`, `superseded` (фраза вытеснена более новой).
 - В веб-приложении озвучка карточек сама выбирает способ: нативный `speak` при наличии моста, иначе Web Speech API браузера (`app/src/transport/speech.ts` в elemental).
@@ -111,10 +130,16 @@ const result = await window.nativeBridge.call("speak", { text: "Понедель
 
 ```
 app/src/main/java/dev/alexander812/lexi/
-  MainActivity.kt              WebView, asset loader, back-навигация, wiring сканера и TTS
-  bridge/NativeBridge.kt       @JavascriptInterface-мост: vibrate, deviceInfo, scanText, speak
+  MainActivity.kt              WebView, asset loader, back-навигация, wiring сканера и озвучки
+  bridge/NativeBridge.kt       @JavascriptInterface-мост: vibrate, deviceInfo, scanText, speak, ttsVoices, downloadVoice, deleteVoice
   ocr/TextScanner.kt           камера → препроцесс → Tesseract → результат
-  speech/SpeechSynthesizer.kt  TextToSpeech: языки, очередь до init, release
+  speech/SpeechService.kt      выбор: локальный голос → системный TTS → voice_missing
+  speech/SpeechSynthesizer.kt  системный TextToSpeech: языки, очередь до init, release
+  speech/LocalTts.kt           sherpa-onnx: загрузка модели, синтез, воспроизведение (AudioTrack)
+  speech/VoiceManager.kt       скачивание tar.bz2, распаковка, удаление, статусы
+  speech/VoiceCatalog.kt       каталог Piper-голосов: id, URL GitHub-релиза, размеры
+  speech/VoiceStorage.kt       filesDir/tts
+app/libs/sherpa-onnx-1.13.8.aar  офлайн-движок (Apache-2.0, все ABI)
 app/src/main/assets/www/       демо-страница моста (кнопки вибрации, инфо, сканирование, озвучка)
 app/src/main/assets/tessdata/  вшитые модели ru и en
 app/src/main/res/mipmap-*/     иконка: эмблема на #050505 (адаптивная + legacy, округлённая и квадратная)

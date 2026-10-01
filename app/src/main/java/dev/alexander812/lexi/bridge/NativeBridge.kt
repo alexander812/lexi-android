@@ -11,14 +11,18 @@ import android.webkit.WebView
 import dev.alexander812.lexi.ocr.ScanOutcome
 import dev.alexander812.lexi.ocr.TextScanner
 import dev.alexander812.lexi.speech.SpeakOutcome
-import dev.alexander812.lexi.speech.SpeechSynthesizer
+import dev.alexander812.lexi.speech.SpeechService
+import dev.alexander812.lexi.speech.VOICE_CATALOG
+import dev.alexander812.lexi.speech.VoiceManager
+import org.json.JSONArray
 import org.json.JSONObject
 
 class NativeBridge(
     private val context: Context,
     private val webView: WebView,
     private val scanner: TextScanner,
-    private val synthesizer: SpeechSynthesizer,
+    private val speech: SpeechService,
+    private val voices: VoiceManager,
 ) {
 
     @JavascriptInterface
@@ -35,6 +39,12 @@ class NativeBridge(
             )
             "scanText" -> requestScan(requestId, params)
             "speak" -> requestSpeak(requestId, params)
+            "ttsVoices" -> respond(
+                requestId,
+                runCatching { voicesInfo() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
+            )
+            "downloadVoice" -> requestVoiceDownload(requestId, params)
+            "deleteVoice" -> requestVoiceDelete(requestId, params)
             else -> respond(requestId, errorResponse("unknown_method: $method"))
         }
     }
@@ -65,7 +75,7 @@ class NativeBridge(
     private fun requestSpeak(requestId: String, params: JSONObject) {
         val text = params.optString("text")
         val lang = params.optString("lang")
-        synthesizer.speak(text, lang) { outcome ->
+        speech.speak(text, lang) { outcome ->
             val response = when (outcome) {
                 is SpeakOutcome.Success -> successResponse(
                     JSONObject()
@@ -76,6 +86,54 @@ class NativeBridge(
             }
             respond(requestId, response)
         }
+    }
+
+    private fun voicesInfo(): JSONObject {
+        val array = JSONArray()
+        VOICE_CATALOG.forEach { entry ->
+            val state = voices.state(entry.lang)
+            array.put(
+                JSONObject()
+                    .put("lang", entry.lang)
+                    .put("id", entry.id)
+                    .put("title", entry.title)
+                    .put("sizeBytes", entry.sizeBytes)
+                    .put("installed", voices.isInstalled(entry.lang))
+                    .put("downloading", state.downloading)
+                    .put("progress", state.progress.toDouble())
+                    .put("error", state.error ?: JSONObject.NULL),
+            )
+        }
+        return successResponse(JSONObject().put("voices", array))
+    }
+
+    private fun requestVoiceDownload(requestId: String, params: JSONObject) {
+        val lang = params.optString("lang").lowercase()
+        if (lang.isBlank()) {
+            respond(requestId, errorResponse("language_required"))
+            return
+        }
+        voices.download(lang) { result ->
+            val response = result.fold(
+                onSuccess = { successResponse(JSONObject().put("installed", true)) },
+                onFailure = { errorResponse(it.message ?: "download_failed") },
+            )
+            respond(requestId, response)
+        }
+    }
+
+    private fun requestVoiceDelete(requestId: String, params: JSONObject) {
+        val lang = params.optString("lang").lowercase()
+        if (lang.isBlank()) {
+            respond(requestId, errorResponse("language_required"))
+            return
+        }
+        if (!voices.delete(lang)) {
+            respond(requestId, errorResponse("unsupported_language"))
+            return
+        }
+        speech.onVoiceDeleted(lang)
+        respond(requestId, successResponse(JSONObject().put("deleted", true)))
     }
 
     private fun parseParams(paramsJson: String): JSONObject =
