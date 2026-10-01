@@ -112,9 +112,11 @@ await window.nativeBridge.call("deleteVoice", { lang: "ru" });
 ```
 
 - Каталог — `speech/VoiceCatalog.kt` (Piper medium): ru `ru_RU-ruslan-medium` (Руслан), en `en_US-lessac-medium`, es `es_ES-sharvard-medium`, fr `fr_FR-siwis-medium`, it `it_IT-paola-medium`, de `de_DE-thorsten-medium`, zh `zh_CN-huayan-medium`; 64–80 МБ.
-- Архив качается из GitHub-релиза `k2-fsa/sherpa-onnx@tts-models` (доступен без VPN) в `cacheDir`, распаковывается commons-compress в `filesDir/tts/<id>` (`.onnx`, `tokens.txt`, `espeak-ng-data`), архив удаляется.
+- Источники (по порядку, при ошибке — следующий): HuggingFace `csukuangfj/vits-piper-<id>` (файлы `.onnx` + `tokens.txt`) → GitHub-релиз `k2-fsa/sherpa-onnx@tts-models` (tar.bz2, распаковка commons-compress). Файлы кладутся в `filesDir/tts/<id>`.
+- `espeak-ng-data` (18 МБ, общий для всех голосов) вшит в APK (`assets/tts/espeak-ng-data.zip`) и распаковывается один раз в `filesDir/tts/espeak-ng-data`.
 - Пока идёт загрузка, `ttsVoices` возвращает `downloading: true` и `progress` (0..1) — веб опрашивает раз в секунду.
 - Синтез и воспроизведение — `speech/LocalTts.kt` (`OfflineTts` + `AudioTrack`); загруженная модель живёт в памяти до смены языка или удаления голоса.
+- При ошибке загрузки в `ttsVoices` приходит `error` с деталями (`huggingface:http_403; github:...`, `storage_unavailable` и т.п.).
 - Пока TTS инициализируется, последняя фраза ждёт готовности и озвучивается после `onInit`.
 - Ошибки приходят как reject с кодом: `text_required`, `speech_unavailable`, `language_not_supported`, `speak_failed`, `superseded` (фраза вытеснена более новой).
 - В веб-приложении озвучка карточек сама выбирает способ: нативный `speak` при наличии моста, иначе Web Speech API браузера (`app/src/transport/speech.ts` в elemental).
@@ -141,6 +143,7 @@ app/src/main/java/dev/alexander812/lexi/
   speech/VoiceStorage.kt       filesDir/tts
 app/libs/sherpa-onnx-1.13.8.aar  офлайн-движок (Apache-2.0, все ABI)
 app/src/main/assets/www/       демо-страница моста (кнопки вибрации, инфо, сканирование, озвучка)
+app/src/main/assets/tts/       espeak-ng-data.zip (общий фонетический словарь для Piper-голосов)
 app/src/main/assets/tessdata/  вшитые модели ru и en
 app/src/main/res/mipmap-*/     иконка: эмблема на #050505 (адаптивная + legacy, округлённая и квадратная)
 app/webview.properties         URL веб-приложения: prod и dev

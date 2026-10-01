@@ -81,7 +81,7 @@ class LocalTts(private val storage: VoiceStorage) {
                 vits = OfflineTtsVitsModelConfig(
                     model = "$dir/${entry.id}.onnx",
                     tokens = "$dir/tokens.txt",
-                    dataDir = "$dir/espeak-ng-data",
+                    dataDir = storage.dataDir(entry).absolutePath,
                 ),
                 numThreads = THREADS,
             ),

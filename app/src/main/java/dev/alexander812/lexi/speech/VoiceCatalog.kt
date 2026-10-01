@@ -19,5 +19,8 @@ val VOICE_CATALOG = listOf(
 
 fun voiceFor(lang: String): VoiceEntry? = VOICE_CATALOG.firstOrNull { it.lang == lang }
 
-fun voiceUrl(modelId: String): String =
+fun githubTarUrl(modelId: String): String =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$modelId.tar.bz2"
+
+fun huggingFaceUrl(modelId: String, file: String): String =
+    "https://huggingface.co/csukuangfj/vits-piper-$modelId/resolve/main/$file"

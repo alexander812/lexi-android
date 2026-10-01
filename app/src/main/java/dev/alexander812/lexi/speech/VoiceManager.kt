@@ -12,6 +12,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.zip.ZipInputStream
 
 data class VoiceState(
     val downloading: Boolean = false,
@@ -52,8 +53,11 @@ class VoiceManager(context: Context) {
         addListener(lang, onDone)
         executor.execute {
             val result = runCatching {
-                fetch(entry) { progress -> states[lang] = VoiceState(downloading = true, progress = progress) }
-                extract(entry)
+                ensureSharedData()
+                fetchVoice(entry) { progress ->
+                    states[lang] = VoiceState(downloading = true, progress = progress)
+                }
+                if (!storage.isInstalled(entry)) throw IOException("voice_incomplete")
             }
             states[lang] = if (result.isSuccess) {
                 VoiceState()
@@ -86,77 +90,146 @@ class VoiceManager(context: Context) {
         callbacks.forEach { it(result) }
     }
 
-    private fun fetch(entry: VoiceEntry, onProgress: (Float) -> Unit) {
-        val archive = File(appContext.cacheDir, "${entry.id}.tar.bz2")
+    private fun fetchVoice(entry: VoiceEntry, onProgress: (Float) -> Unit) {
+        val errors = mutableListOf<String>()
+
         try {
-            if (archive.length() != entry.sizeBytes) {
-                archive.delete()
-                val connection = URL(voiceUrl(entry.id)).openConnection() as HttpURLConnection
-                try {
-                    connection.connectTimeout = CONNECT_TIMEOUT_MS
-                    connection.readTimeout = READ_TIMEOUT_MS
-                    if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                        throw IOException("download_failed")
-                    }
-                    val total = connection.contentLengthLong.takeIf { it > 0L } ?: entry.sizeBytes
-                    connection.inputStream.use { input ->
-                        FileOutputStream(archive).use { output ->
-                            val buffer = ByteArray(BUFFER_SIZE)
-                            var received = 0L
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                output.write(buffer, 0, count)
-                                received += count
-                                onProgress((received.toFloat() / total).coerceIn(0f, 1f))
-                            }
-                        }
-                    }
-                } finally {
-                    connection.disconnect()
-                }
-            }
-            if (archive.length() != entry.sizeBytes) throw IOException("download_incomplete")
+            fetchFromHuggingFace(entry, onProgress)
+            if (storage.isInstalled(entry)) return
+            errors += "huggingface:voice_incomplete"
         } catch (error: Exception) {
-            archive.delete()
-            throw error
+            Log.w(TAG, "huggingface source failed: ${error.message}")
+            errors += "huggingface:${error.message ?: "failed"}"
         }
+
+        try {
+            fetchFromGithub(entry, onProgress)
+            if (storage.isInstalled(entry)) return
+            errors += "github:voice_incomplete"
+        } catch (error: Exception) {
+            Log.w(TAG, "github source failed: ${error.message}")
+            errors += "github:${error.message ?: "failed"}"
+        }
+
+        throw IOException(errors.joinToString("; ").ifEmpty { "download_failed" })
     }
 
-    private fun extract(entry: VoiceEntry) {
+    private fun fetchFromHuggingFace(entry: VoiceEntry, onProgress: (Float) -> Unit) {
+        val dir = storage.voiceDir(entry.id)
+        if (!dir.mkdirs() && !dir.isDirectory) throw IOException("storage_unavailable")
+
+        downloadFile(
+            huggingFaceUrl(entry.id, "${entry.id}.onnx"),
+            storage.modelFile(entry),
+        ) { progress -> onProgress(progress * MODEL_PROGRESS_SHARE) }
+
+        downloadFile(
+            huggingFaceUrl(entry.id, "tokens.txt"),
+            storage.tokensFile(entry),
+        ) { progress -> onProgress(MODEL_PROGRESS_SHARE + progress * (1f - MODEL_PROGRESS_SHARE)) }
+    }
+
+    private fun fetchFromGithub(entry: VoiceEntry, onProgress: (Float) -> Unit) {
         val archive = File(appContext.cacheDir, "${entry.id}.tar.bz2")
         try {
-            if (!archive.exists()) throw IOException("download_missing")
-            val target = storage.voiceDir(entry.id)
-            target.deleteRecursively()
-            if (!target.mkdirs()) throw IOException("storage_unavailable")
-            val targetPath = target.canonicalPath + File.separator
-            BZip2CompressorInputStream(BufferedInputStream(archive.inputStream())).use { bzip ->
-                TarArchiveInputStream(bzip).use { tar ->
-                    while (true) {
-                        val item = tar.nextEntry ?: break
-                        if (!tar.canReadEntryData(item)) continue
-                        val name = item.name.substringAfter('/', "")
-                        if (name.isEmpty()) continue
-                        val file = File(target, name)
-                        if (!file.canonicalPath.startsWith(targetPath)) throw IOException("bad_archive")
-                        if (item.isDirectory) {
-                            file.mkdirs()
-                        } else {
-                            file.parentFile?.mkdirs()
-                            FileOutputStream(file).use { output -> tar.copyTo(output) }
-                        }
-                    }
-                }
-            }
-            if (!storage.isInstalled(entry)) throw IOException("extract_failed")
+            downloadFile(githubTarUrl(entry.id), archive, onProgress)
+            extractTar(entry, archive)
         } finally {
             archive.delete()
         }
     }
 
+    private fun downloadFile(url: String, target: File, onProgress: (Float) -> Unit) {
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        temp.delete()
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = CONNECT_TIMEOUT_MS
+            connection.readTimeout = READ_TIMEOUT_MS
+            connection.setRequestProperty("User-Agent", USER_AGENT)
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) throw IOException("http_$code")
+            val total = connection.contentLengthLong.takeIf { it > 0L } ?: -1L
+            connection.inputStream.use { input ->
+                FileOutputStream(temp).use { output ->
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var received = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        received += count
+                        if (total > 0L) onProgress((received.toFloat() / total).coerceIn(0f, 1f))
+                    }
+                }
+            }
+            if (temp.length() == 0L) throw IOException("empty_response")
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
+            }
+        } catch (error: Exception) {
+            temp.delete()
+            throw error
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun ensureSharedData() {
+        val target = storage.sharedDataDir()
+        if (File(target, "phontab").length() > 0L) return
+        target.deleteRecursively()
+        if (!target.mkdirs()) throw IOException("storage_unavailable")
+        val rootPath = storage.rootDir().canonicalPath + File.separator
+        appContext.assets.open(ESPEAK_ASSET).use { input ->
+            ZipInputStream(BufferedInputStream(input)).use { zip ->
+                while (true) {
+                    val item = zip.nextEntry ?: break
+                    val file = File(storage.rootDir(), item.name)
+                    if (!file.canonicalPath.startsWith(rootPath)) throw IOException("bad_asset")
+                    if (item.isDirectory) {
+                        file.mkdirs()
+                    } else {
+                        file.parentFile?.mkdirs()
+                        FileOutputStream(file).use { output -> zip.copyTo(output) }
+                    }
+                }
+            }
+        }
+        if (File(target, "phontab").length() == 0L) throw IOException("asset_extract_failed")
+    }
+
+    private fun extractTar(entry: VoiceEntry, archive: File) {
+        val target = storage.voiceDir(entry.id)
+        if (!target.mkdirs() && !target.isDirectory) throw IOException("storage_unavailable")
+        val targetPath = target.canonicalPath + File.separator
+        BZip2CompressorInputStream(BufferedInputStream(archive.inputStream())).use { bzip ->
+            TarArchiveInputStream(bzip).use { tar ->
+                while (true) {
+                    val item = tar.nextEntry ?: break
+                    if (!tar.canReadEntryData(item)) continue
+                    val name = item.name.substringAfter('/', "")
+                    if (name.isEmpty() || name.startsWith(ESPEAK_DIR)) continue
+                    val file = File(target, name)
+                    if (!file.canonicalPath.startsWith(targetPath)) throw IOException("bad_archive")
+                    if (item.isDirectory) {
+                        file.mkdirs()
+                    } else {
+                        file.parentFile?.mkdirs()
+                        FileOutputStream(file).use { output -> tar.copyTo(output) }
+                    }
+                }
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "LexiVoice"
+        private const val USER_AGENT = "Lexi/1.0 (Android)"
+        private const val ESPEAK_ASSET = "tts/espeak-ng-data.zip"
+        private const val ESPEAK_DIR = "espeak-ng-data/"
+        private const val MODEL_PROGRESS_SHARE = 0.97f
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 120_000
         private const val BUFFER_SIZE = 64 * 1024
