@@ -10,6 +10,11 @@ val webviewProperties = Properties().apply {
     if (configFile.exists()) configFile.reader(Charsets.UTF_8).use { load(it) }
 }
 
+val keystoreProperties = Properties().apply {
+    val configFile = rootProject.file("keystore.properties")
+    if (configFile.exists()) configFile.reader(Charsets.UTF_8).use { load(it) }
+}
+
 fun webviewUrl(key: String): String = webviewProperties.getProperty(key).orEmpty().trim()
 
 android {
@@ -32,9 +37,21 @@ android {
         buildConfig = true
     }
 
+    signingConfigs {
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug {
-            buildConfigField("String", "WEB_START_URL", "\"${webviewUrl("webview.devUrl")}\"")
+            val url = webviewUrl("webview.devUrl").ifBlank { webviewUrl("webview.prodUrl") }
+            buildConfigField("String", "WEB_START_URL", "\"$url\"")
         }
         release {
             isMinifyEnabled = false
@@ -42,6 +59,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = signingConfigs.findByName("release")
             buildConfigField("String", "WEB_START_URL", "\"${webviewUrl("webview.prodUrl")}\"")
         }
     }

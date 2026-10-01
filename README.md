@@ -23,6 +23,45 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 
 `sdk.dir` для CLI — в `local.properties` (в git не попадает). Тестировать нужно на устройстве: сканирование использует камеру.
 
+## Установка на телефон
+
+Debug-APK ставится без ключей:
+
+```bash
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
+```
+
+По USB: `./gradlew :app:installDebug` или `adb install -r app/build/outputs/apk/debug/app-debug.apk`. Либо скинуть APK на телефон и открыть файл (нужно разрешение «Установка неизвестных приложений»).
+
+## Подписанный release APK
+
+1. Создать ключ один раз (файл хранить отдельно от репозитория):
+
+```bash
+keytool -genkeypair -v -keystore lexi-release.jks -alias lexi -keyalg RSA -keysize 2048 -validity 10000
+```
+
+2. Создать в корне репозитория `keystore.properties` (в git не коммитится):
+
+```properties
+storeFile=lexi-release.jks
+storePassword=пароль
+keyAlias=lexi
+keyPassword=пароль
+```
+
+Путь в `storeFile` — относительно корня репозитория или абсолютный.
+
+3. Собрать:
+
+```bash
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:assembleRelease
+# APK: app/build/outputs/apk/release/app-release.apk
+```
+
+Без `keystore.properties` release собирается неподписанным (`app-release-unsigned.apk`) — на телефон его не установить. Ключ и пароли не терять: обновления приложения подписываются тем же ключом.
+
 ## URL веб-приложения
 
 Настраивается в `app/webview.properties`:
@@ -32,7 +71,7 @@ webview.prodUrl=https://alexander812.github.io/elemental/
 webview.devUrl=
 ```
 
-- debug-сборка берёт `webview.devUrl`, release — `webview.prodUrl`; пустое значение → локальная демо-страница из `assets`.
+- debug-сборка берёт `webview.devUrl`, если пуст — `webview.prodUrl`; release — `webview.prodUrl`; если пусто — локальная демо-страница из `assets`.
 - Для разработки укажи в `webview.devUrl` адрес Vite-сервера (`npm run dev -- --host`) и собери debug.
 - HTTP разрешён только в debug (`app/src/debug/res/xml/network_security_config.xml`); release — только https.
 
@@ -46,12 +85,13 @@ const result = await window.nativeBridge.call("scanText", { lang: "ru" });
 - `lang` — код языка из приложения: `ru`, `en`, `es`, `fr`, `it`, `de`, `zh` (внутри маппится на код модели Tesseract, `zh` → `chi_sim`).
 - Открывается системная камера (`ACTION_IMAGE_CAPTURE`, без разрешения `CAMERA`), снимок кладётся в `cacheDir/scans` через FileProvider, после распознавания удаляется.
 - Отмена съёмки — успешный ответ `{ text: "", cancelled: true }`; ошибки приходят как reject с кодом: `unsupported_language`, `busy`, `no_camera_app`, `decode_failed`, `model_download_failed`, `tesseract_init_failed`.
-- Перед распознаванием фото уменьшается до 2000px по большей стороне и разворачивается по EXIF; PSM — `AUTO`.
+- Перед распознаванием фото уменьшается до 2000px по большей стороне, разворачивается по EXIF и приводится к серой шкале с растяжением контраста по гистограмме (1%–99%); PSM — `AUTO`.
 
 ## Модели Tesseract
 
-- `ru` (`rus.traineddata`) и `en` (`eng.traineddata`) вшиты в `app/src/main/assets/tessdata` — работают офлайн сразу.
+- `ru` (`rus.traineddata`, точная модель `tessdata_best`) и `en` (`eng.traineddata`, быстрая `tessdata_fast`) вшиты в `app/src/main/assets/tessdata` — работают офлайн сразу.
 - Остальные языки скачиваются при первом использовании с `tesseract-ocr/tessdata_fast@4.0.0` в `filesDir/tesseract/tessdata` и дальше работают офлайн. Скачивание требует интернет один раз на язык.
+- Вшитые модели копируются в `filesDir` один раз; при обновлении приложения копии обновляются по ревизии (`MODEL_REVISION` в `TextScanner.kt`).
 - В коде — `TextScanner.ensureModel`; URL и список языков (`MODEL_ALIASES`) — в конце `TextScanner.kt`.
 
 ## Структура

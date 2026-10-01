@@ -90,27 +90,92 @@ class TextScanner(private val activity: ComponentActivity) {
         ensureModel(scan.lang)
         val bitmap = decodeBitmap(scan.photo)
         val oriented = applyExifOrientation(scan.photo, bitmap)
+        val prepared = prepareForRecognition(oriented)
         val tess = TessBaseAPI()
         try {
             val dataPath = File(activity.filesDir, TESSDATA_PARENT).absolutePath
             if (!tess.init(dataPath, scan.lang)) throw IOException("tesseract_init_failed")
             tess.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
-            tess.setImage(oriented)
+            tess.setImage(prepared)
             val text = tess.getUTF8Text()
             return text to tess.meanConfidence()
         } finally {
             tess.recycle()
-            oriented.recycle()
+            prepared.recycle()
+            if (prepared !== oriented) oriented.recycle()
             if (oriented !== bitmap) bitmap.recycle()
         }
     }
 
+    private fun prepareForRecognition(bitmap: Bitmap): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        val histogram = IntArray(LUMINANCE_LEVELS)
+        for (pixel in pixels) histogram[luminanceOf(pixel)] += 1
+
+        val total = pixels.size
+        var low = 0
+        var accumulated = 0
+        for (level in 0 until LUMINANCE_LEVELS) {
+            accumulated += histogram[level]
+            if (accumulated >= total * LOW_PERCENTILE / 100) {
+                low = level
+                break
+            }
+        }
+        var high = LUMINANCE_LEVELS - 1
+        accumulated = 0
+        for (level in LUMINANCE_LEVELS - 1 downTo 0) {
+            accumulated += histogram[level]
+            if (accumulated >= total * HIGH_PERCENTILE / 100) {
+                high = level
+                break
+            }
+        }
+        if (high - low < MIN_CONTRAST_RANGE) {
+            low = 0
+            high = LUMINANCE_LEVELS - 1
+        }
+
+        val range = high - low
+        val lut = IntArray(LUMINANCE_LEVELS) { level ->
+            (((level - low) * (LUMINANCE_LEVELS - 1)) / range).coerceIn(0, LUMINANCE_LEVELS - 1)
+        }
+        for (index in pixels.indices) {
+            val value = lut[luminanceOf(pixels[index])]
+            pixels[index] = (0xFF shl 24) or (value shl 16) or (value shl 8) or value
+        }
+
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        output.setPixels(pixels, 0, width, 0, 0, width, height)
+        return output
+    }
+
+    private fun luminanceOf(pixel: Int): Int {
+        val red = (pixel shr 16) and 0xFF
+        val green = (pixel shr 8) and 0xFF
+        val blue = pixel and 0xFF
+        return (red * 299 + green * 587 + blue * 114) / 1000
+    }
+
     private fun ensureModel(lang: String): File {
+        migrateBundledModels()
         val target = File(tessdataDir(), "$lang.traineddata")
         if (target.length() > 0L) return target
         if (copyAssetModel(lang, target)) return target
         downloadModel(lang, target)
         return target
+    }
+
+    private fun migrateBundledModels() {
+        val revisionFile = File(tessdataDir(), MODEL_REVISION_FILE)
+        val installedRevision = revisionFile.takeIf { it.exists() }?.readText()?.trim()
+        if (installedRevision == MODEL_REVISION) return
+        BUNDLED_MODELS.forEach { File(tessdataDir(), "$it.traineddata").delete() }
+        revisionFile.writeText(MODEL_REVISION)
     }
 
     private fun tessdataDir(): File =
@@ -216,6 +281,15 @@ class TextScanner(private val activity: ComponentActivity) {
         private const val MODEL_URL_PLACEHOLDER = "{lang}"
         private const val MODEL_URL_TEMPLATE =
             "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.0.0/{lang}.traineddata"
+
+        private const val LUMINANCE_LEVELS = 256
+        private const val LOW_PERCENTILE = 1
+        private const val HIGH_PERCENTILE = 1
+        private const val MIN_CONTRAST_RANGE = 24
+
+        private const val MODEL_REVISION = "2"
+        private const val MODEL_REVISION_FILE = ".revision"
+        private val BUNDLED_MODELS = listOf("rus", "eng")
 
         private val MODEL_ALIASES = mapOf(
             "ru" to "rus",
