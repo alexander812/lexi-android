@@ -10,6 +10,8 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import dev.alexander812.lexi.ocr.ScanOutcome
 import dev.alexander812.lexi.ocr.TextScanner
+import dev.alexander812.lexi.speech.RecognitionService
+import dev.alexander812.lexi.speech.RecognizeOutcome
 import dev.alexander812.lexi.speech.SpeakOutcome
 import dev.alexander812.lexi.speech.SpeechService
 import dev.alexander812.lexi.speech.VOICE_CATALOG
@@ -22,6 +24,7 @@ class NativeBridge(
     private val webView: WebView,
     private val scanner: TextScanner,
     private val speech: SpeechService,
+    private val recognition: RecognitionService,
     private val voices: VoiceManager,
 ) {
 
@@ -39,6 +42,7 @@ class NativeBridge(
             )
             "scanText" -> requestScan(requestId, params)
             "speak" -> requestSpeak(requestId, params)
+            "recognizeSpeech" -> requestRecognize(requestId, params)
             "ttsVoices" -> respond(
                 requestId,
                 runCatching { voicesInfo() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
@@ -83,6 +87,26 @@ class NativeBridge(
                         .put("utteranceId", outcome.utteranceId),
                 )
                 is SpeakOutcome.Failure -> errorResponse(outcome.reason)
+            }
+            respond(requestId, response)
+        }
+    }
+
+    private fun requestRecognize(requestId: String, params: JSONObject) {
+        val lang = params.optString("lang").lowercase()
+        recognition.recognize(lang) { outcome ->
+            val response = when (outcome) {
+                is RecognizeOutcome.Success -> {
+                    val alternatives = JSONArray()
+                    outcome.alternatives.forEach { alternatives.put(it) }
+                    successResponse(
+                        JSONObject()
+                            .put("transcript", outcome.transcript)
+                            .put("confidence", outcome.confidence ?: JSONObject.NULL)
+                            .put("alternatives", alternatives),
+                    )
+                }
+                is RecognizeOutcome.Failure -> errorResponse(outcome.reason)
             }
             respond(requestId, response)
         }
