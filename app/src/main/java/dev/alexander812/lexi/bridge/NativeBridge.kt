@@ -6,10 +6,13 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import dev.alexander812.lexi.ocr.ScanOutcome
 import dev.alexander812.lexi.ocr.TextScanner
+import dev.alexander812.lexi.speech.ASR_ENTRY
+import dev.alexander812.lexi.speech.AsrManager
 import dev.alexander812.lexi.speech.RecognitionService
 import dev.alexander812.lexi.speech.RecognizeOutcome
 import dev.alexander812.lexi.speech.SpeakOutcome
@@ -25,11 +28,16 @@ class NativeBridge(
     private val scanner: TextScanner,
     private val speech: SpeechService,
     private val recognition: RecognitionService,
+    private val asr: AsrManager,
     private val voices: VoiceManager,
 ) {
 
     @JavascriptInterface
-    fun hasRecognition(): Boolean = runCatching { recognition.isAvailable() }.getOrDefault(false)
+    fun hasRecognition(): Boolean {
+        val available = runCatching { recognition.isAvailable() }.getOrDefault(false)
+        Log.i(TAG, "hasRecognition: $available")
+        return available
+    }
 
     @JavascriptInterface
     fun call(requestId: String, method: String, paramsJson: String) {
@@ -46,6 +54,15 @@ class NativeBridge(
             "scanText" -> requestScan(requestId, params)
             "speak" -> requestSpeak(requestId, params)
             "recognizeSpeech" -> requestRecognize(requestId, params)
+            "asrStatus" -> respond(
+                requestId,
+                runCatching { asrStatus() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
+            )
+            "deleteAsr" -> {
+                asr.delete()
+                recognition.onAsrDeleted()
+                respond(requestId, successResponse(JSONObject().put("deleted", true)))
+            }
             "ttsVoices" -> respond(
                 requestId,
                 runCatching { voicesInfo() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
@@ -113,6 +130,18 @@ class NativeBridge(
             }
             respond(requestId, response)
         }
+    }
+
+    private fun asrStatus(): JSONObject {
+        val state = asr.state()
+        return successResponse(
+            JSONObject()
+                .put("installed", asr.isInstalled())
+                .put("downloading", state.downloading)
+                .put("progress", state.progress.toDouble())
+                .put("error", state.error ?: JSONObject.NULL)
+                .put("sizeBytes", ASR_ENTRY.sizeBytes),
+        )
     }
 
     private fun voicesInfo(): JSONObject {
@@ -216,6 +245,7 @@ class NativeBridge(
 
     companion object {
         const val NAME = "AndroidBridge"
+        private const val TAG = "NativeBridge"
         private const val DEFAULT_VIBRATION_MS = 50L
         private const val MAX_VIBRATION_MS = 10_000L
     }

@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -21,22 +22,25 @@ sealed interface RecognizeOutcome {
     data class Failure(val reason: String) : RecognizeOutcome
 }
 
-class RecognitionService(private val activity: ComponentActivity) {
+class RecognitionService(
+    private val activity: ComponentActivity,
+    private val asr: OfflineAsr,
+    private val asrManager: AsrManager,
+) {
 
     private var recognizer: SpeechRecognizer? = null
     private var pending: ((RecognizeOutcome) -> Unit)? = null
-    private var pendingLang: String = DEFAULT_LOCALE
-    private var listening = false
+    private var pendingCode: String = "en"
+    private var pendingLocale: String = "en-US"
 
     private val permissionLauncher = activity.registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        val callback = pending ?: return@registerForActivityResult
+        if (pending == null) return@registerForActivityResult
         if (granted) {
-            startListening()
+            begin()
         } else {
-            pending = null
-            callback(RecognizeOutcome.Failure(REASON_PERMISSION))
+            deliver(RecognizeOutcome.Failure(REASON_PERMISSION))
         }
     }
 
@@ -58,36 +62,91 @@ class RecognitionService(private val activity: ComponentActivity) {
         }
     }
 
+    fun isAvailable(): Boolean = true
+
     fun recognize(lang: String?, onOutcome: (RecognizeOutcome) -> Unit) {
         activity.runOnUiThread {
-            if (pending != null || listening) {
+            if (pending != null) {
                 onOutcome(RecognizeOutcome.Failure(REASON_BUSY))
                 return@runOnUiThread
             }
-            if (!isAvailable()) {
-                onOutcome(RecognizeOutcome.Failure(REASON_NOT_AVAILABLE))
+
+            pending = onOutcome
+            pendingCode = languageCode(lang)
+            pendingLocale = localeFor(lang)
+
+            if (!hasPermission()) {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 return@runOnUiThread
             }
-            pending = onOutcome
-            pendingLang = localeFor(lang)
-            if (hasPermission()) {
-                startListening()
-            } else {
-                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }
+
+            begin()
         }
     }
 
     fun release() {
         activity.runOnUiThread {
             pending = null
-            listening = false
             recognizer?.destroy()
             recognizer = null
         }
+        asr.release()
     }
 
-    fun isAvailable(): Boolean =
+    fun onAsrDeleted() {
+        asr.unload()
+    }
+
+    private fun begin() {
+        if (hasSystemRecognizer()) {
+            startSystem()
+            return
+        }
+
+        if (pendingCode !in ASR_ENTRY.languages) {
+            deliver(RecognizeOutcome.Failure(REASON_LANGUAGE))
+            return
+        }
+
+        if (!asrManager.isInstalled()) {
+            Log.i(TAG, "offline model missing, downloading")
+            asrManager.download { result ->
+                activity.runOnUiThread {
+                    if (result.isSuccess && pending != null) {
+                        startOffline()
+                    } else {
+                        deliver(RecognizeOutcome.Failure(result.exceptionOrNull()?.message ?: REASON_DOWNLOAD))
+                    }
+                }
+            }
+            return
+        }
+
+        startOffline()
+    }
+
+    private fun startOffline() {
+        Log.i(TAG, "offline recognition started: $pendingCode")
+        asr.listen { outcome ->
+            activity.runOnUiThread { deliver(outcome) }
+        }
+    }
+
+    private fun startSystem() {
+        Log.i(TAG, "system recognition started: $pendingLocale")
+        try {
+            val current = recognizer ?: createRecognizer().also {
+                it.setRecognitionListener(listener)
+                recognizer = it
+            }
+            current.startListening(buildIntent())
+        } catch (error: Exception) {
+            Log.w(TAG, "system recognition failed to start", error)
+            deliver(RecognizeOutcome.Failure(REASON_FAILED))
+        }
+    }
+
+    private fun hasSystemRecognizer(): Boolean =
         SpeechRecognizer.isRecognitionAvailable(activity) || isOnDeviceAvailable()
 
     private fun isOnDeviceAvailable(): Boolean =
@@ -97,20 +156,6 @@ class RecognitionService(private val activity: ComponentActivity) {
     private fun hasPermission(): Boolean =
         ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-
-    private fun startListening() {
-        try {
-            val current = recognizer ?: createRecognizer().also {
-                it.setRecognitionListener(listener)
-                recognizer = it
-            }
-            listening = true
-            current.startListening(buildIntent())
-        } catch (error: Exception) {
-            listening = false
-            deliver(RecognizeOutcome.Failure(REASON_FAILED))
-        }
-    }
 
     private fun createRecognizer(): SpeechRecognizer {
         if (SpeechRecognizer.isRecognitionAvailable(activity)) {
@@ -126,7 +171,7 @@ class RecognitionService(private val activity: ComponentActivity) {
 
     private fun buildIntent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, pendingLang)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, pendingLocale)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RESULTS)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, activity.packageName)
     }
@@ -147,22 +192,33 @@ class RecognitionService(private val activity: ComponentActivity) {
     }
 
     private fun deliver(outcome: RecognizeOutcome) {
-        listening = false
         val callback = pending ?: return
         pending = null
+
+        when (outcome) {
+            is RecognizeOutcome.Success -> Log.i(TAG, "recognition success: ${outcome.transcript.length} chars")
+            is RecognizeOutcome.Failure -> Log.w(TAG, "recognition failed: ${outcome.reason}")
+        }
+
         callback(outcome)
     }
 
+    private fun languageCode(lang: String?): String =
+        lang?.trim()?.substringBefore('-')?.lowercase().orEmpty().ifEmpty { "en" }
+
     private fun localeFor(lang: String?): String {
-        val code = lang?.trim()?.lowercase().orEmpty()
+        val code = languageCode(lang)
         return LOCALES[code] ?: code.ifEmpty { DEFAULT_LOCALE }
     }
 
     companion object {
+        private const val TAG = "RecognitionService"
         private const val DEFAULT_LOCALE = "en-US"
         private const val MAX_RESULTS = 3
         private const val REASON_BUSY = "busy"
+        private const val REASON_DOWNLOAD = "asr_download_failed"
         private const val REASON_FAILED = "recognition_failed"
+        private const val REASON_LANGUAGE = "language_not_supported"
         private const val REASON_NO_SPEECH = "no_speech"
         private const val REASON_NOT_AVAILABLE = "not_available"
         private const val REASON_PERMISSION = "permission_denied"

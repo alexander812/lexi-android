@@ -13,7 +13,9 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import dev.alexander812.lexi.bridge.NativeBridge
 import dev.alexander812.lexi.ocr.TextScanner
+import dev.alexander812.lexi.speech.AsrManager
 import dev.alexander812.lexi.speech.LocalTts
+import dev.alexander812.lexi.speech.OfflineAsr
 import dev.alexander812.lexi.speech.RecognitionService
 import dev.alexander812.lexi.speech.SpeechService
 import dev.alexander812.lexi.speech.SpeechSynthesizer
@@ -28,6 +30,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var scanner: TextScanner
     private lateinit var speech: SpeechService
     private lateinit var recognition: RecognitionService
+    private lateinit var asr: AsrManager
     private lateinit var voices: VoiceManager
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -51,9 +54,10 @@ class MainActivity : ComponentActivity() {
         scanner = TextScanner(this)
         voices = VoiceManager(this)
         speech = SpeechService(SpeechSynthesizer(this), voices, LocalTts(voices.storage()))
-        recognition = RecognitionService(this)
+        asr = AsrManager(this)
+        recognition = RecognitionService(this, OfflineAsr(asr.storage()), asr)
         webView.addJavascriptInterface(
-            NativeBridge(this, webView, scanner, speech, recognition, voices),
+            NativeBridge(this, webView, scanner, speech, recognition, asr, voices),
             NativeBridge.NAME,
         )
 
@@ -93,6 +97,7 @@ class MainActivity : ComponentActivity() {
         scanner.release()
         speech.release()
         recognition.release()
+        asr.release()
         voices.release()
         webView.destroy()
         super.onDestroy()
