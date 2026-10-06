@@ -2,13 +2,14 @@ package dev.alexander812.lexi
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
-import androidx.activity.addCallback
+import androidx.activity.OnBackPressedCallback
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import dev.alexander812.lexi.bridge.NativeBridge
@@ -23,10 +24,12 @@ import dev.alexander812.lexi.speech.VoiceManager
 
 private const val ASSET_DOMAIN = "appassets.androidplatform.net"
 private const val LOCAL_START_URL = "https://$ASSET_DOMAIN/assets/www/index.html"
+private const val BACK_HANDLER_SCRIPT = "(window.__lexiBack && window.__lexiBack()) === true"
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
+    private var handlingBack = false
     private lateinit var scanner: TextScanner
     private lateinit var speech: SpeechService
     private lateinit var recognition: RecognitionService
@@ -39,6 +42,8 @@ class MainActivity : ComponentActivity() {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
         webView = WebView(this)
+        webView.setBackgroundColor(Color.parseColor("#050505"))
+        webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         setContentView(webView)
 
         with(webView.settings) {
@@ -81,14 +86,26 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        onBackPressedDispatcher.addCallback(this) {
-            if (webView.canGoBack()) {
-                webView.goBack()
-            } else {
-                isEnabled = false
-                onBackPressedDispatcher.onBackPressed()
+        val backCallback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (handlingBack) return
+
+                handlingBack = true
+                webView.evaluateJavascript(BACK_HANDLER_SCRIPT) { result ->
+                    handlingBack = false
+
+                    if (result == "true") return@evaluateJavascript
+
+                    if (webView.canGoBack()) {
+                        webView.goBack()
+                    } else {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                    }
+                }
             }
         }
+        onBackPressedDispatcher.addCallback(this, backCallback)
 
         webView.loadUrl(startUrl)
     }

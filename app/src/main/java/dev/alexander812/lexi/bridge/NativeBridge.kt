@@ -21,6 +21,7 @@ import dev.alexander812.lexi.speech.VOICE_CATALOG
 import dev.alexander812.lexi.speech.VoiceManager
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 class NativeBridge(
     private val context: Context,
@@ -31,6 +32,27 @@ class NativeBridge(
     private val asr: AsrManager,
     private val voices: VoiceManager,
 ) {
+
+    @Volatile
+    private var lastScanResult: JSONObject? = null
+
+    @Volatile
+    private var scanPending = false
+
+    private val sessionToken = UUID.randomUUID().toString()
+
+    @JavascriptInterface
+    fun sessionToken(): String = sessionToken
+
+    @JavascriptInterface
+    fun isScanPending(): Boolean = scanPending
+
+    @JavascriptInterface
+    @Synchronized
+    fun finishScan() {
+        scanPending = false
+        lastScanResult = null
+    }
 
     @JavascriptInterface
     fun hasRecognition(): Boolean {
@@ -54,6 +76,10 @@ class NativeBridge(
             "scanText" -> requestScan(requestId, params)
             "speak" -> requestSpeak(requestId, params)
             "recognizeSpeech" -> requestRecognize(requestId, params)
+            "cancelRecognizeSpeech" -> {
+                recognition.cancel()
+                respond(requestId, successResponse(JSONObject().put("cancelled", true)))
+            }
             "asrStatus" -> respond(
                 requestId,
                 runCatching { asrStatus() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
@@ -79,6 +105,8 @@ class NativeBridge(
             respond(requestId, errorResponse("language_required"))
             return
         }
+        scanPending = true
+        lastScanResult = null
         scanner.scan(lang) { outcome ->
             val response = when (outcome) {
                 is ScanOutcome.Success -> successResponse(
@@ -92,8 +120,23 @@ class NativeBridge(
                 )
                 is ScanOutcome.Failure -> errorResponse(outcome.reason)
             }
+            lastScanResult = response
+            Log.i(TAG, "scan result stored")
             respond(requestId, response)
         }
+    }
+
+    @JavascriptInterface
+    @Synchronized
+    fun consumeScanResult(): String {
+        val result = lastScanResult
+        Log.i(TAG, "consumeScanResult: ${if (result == null) "miss" else "hit"}")
+
+        if (result == null) return ""
+
+        lastScanResult = null
+        scanPending = false
+        return result.toString()
     }
 
     private fun requestSpeak(requestId: String, params: JSONObject) {

@@ -3,5 +3,7 @@
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:navigationBarColor">@color/background</item>
         <item name="android:windowBackground">@color/background</item>
+        <item name="android:windowSplashScreenBackground">@color/background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_transparent</item>
     </style>
 </resources>

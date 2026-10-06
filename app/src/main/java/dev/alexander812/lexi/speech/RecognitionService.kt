@@ -32,6 +32,7 @@ class RecognitionService(
     private var pending: ((RecognizeOutcome) -> Unit)? = null
     private var pendingCode: String = "en"
     private var pendingLocale: String = "en-US"
+    private var systemActive = false
 
     private val permissionLauncher = activity.registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -84,9 +85,24 @@ class RecognitionService(
         }
     }
 
+    fun cancel() {
+        activity.runOnUiThread {
+            if (pending == null) return@runOnUiThread
+
+            if (systemActive) {
+                recognizer?.cancel()
+                return@runOnUiThread
+            }
+
+            asr.cancel()
+            deliver(RecognizeOutcome.Failure(REASON_CANCELLED))
+        }
+    }
+
     fun release() {
         activity.runOnUiThread {
             pending = null
+            systemActive = false
             recognizer?.destroy()
             recognizer = null
         }
@@ -127,6 +143,7 @@ class RecognitionService(
 
     private fun startOffline() {
         Log.i(TAG, "offline recognition started: $pendingCode")
+        systemActive = false
         asr.listen { outcome ->
             activity.runOnUiThread { deliver(outcome) }
         }
@@ -134,6 +151,7 @@ class RecognitionService(
 
     private fun startSystem() {
         Log.i(TAG, "system recognition started: $pendingLocale")
+        systemActive = true
         try {
             val current = recognizer ?: createRecognizer().also {
                 it.setRecognitionListener(listener)
@@ -194,6 +212,7 @@ class RecognitionService(
     private fun deliver(outcome: RecognizeOutcome) {
         val callback = pending ?: return
         pending = null
+        systemActive = false
 
         when (outcome) {
             is RecognizeOutcome.Success -> Log.i(TAG, "recognition success: ${outcome.transcript.length} chars")
@@ -216,6 +235,7 @@ class RecognitionService(
         private const val DEFAULT_LOCALE = "en-US"
         private const val MAX_RESULTS = 3
         private const val REASON_BUSY = "busy"
+        private const val REASON_CANCELLED = "cancelled"
         private const val REASON_DOWNLOAD = "asr_download_failed"
         private const val REASON_FAILED = "recognition_failed"
         private const val REASON_LANGUAGE = "language_not_supported"

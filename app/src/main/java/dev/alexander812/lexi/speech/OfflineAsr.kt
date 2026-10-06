@@ -18,18 +18,24 @@ class OfflineAsr(private val storage: AsrStorage) {
     private val executor = Executors.newSingleThreadExecutor()
     private var recognizer: OfflineRecognizer? = null
 
+    @Volatile
+    private var cancelled = false
+
     fun listen(onOutcome: (RecognizeOutcome) -> Unit) {
+        cancelled = false
         executor.execute {
             val outcome = try {
                 val samples = capture()
-                if (samples == null) {
+                if (cancelled) {
+                    RecognizeOutcome.Failure(REASON_CANCELLED)
+                } else if (samples == null) {
                     RecognizeOutcome.Failure(REASON_NO_SPEECH)
                 } else {
                     val text = decode(samples)
-                    if (text.isBlank()) {
-                        RecognizeOutcome.Failure(REASON_NO_SPEECH)
-                    } else {
-                        RecognizeOutcome.Success(text, null, emptyList())
+                    when {
+                        cancelled -> RecognizeOutcome.Failure(REASON_CANCELLED)
+                        text.isBlank() -> RecognizeOutcome.Failure(REASON_NO_SPEECH)
+                        else -> RecognizeOutcome.Success(text, null, emptyList())
                     }
                 }
             } catch (error: SecurityException) {
@@ -41,6 +47,10 @@ class OfflineAsr(private val storage: AsrStorage) {
             }
             onOutcome(outcome)
         }
+    }
+
+    fun cancel() {
+        cancelled = true
     }
 
     fun unload() {
@@ -125,7 +135,7 @@ class OfflineAsr(private val storage: AsrStorage) {
         try {
             record.startRecording()
 
-            while (true) {
+            while (!cancelled) {
                 val read = record.read(chunk, 0, chunk.size)
                 if (read <= 0) break
 
@@ -163,7 +173,7 @@ class OfflineAsr(private val storage: AsrStorage) {
             record.release()
         }
 
-        if (!started || speechChunks < MIN_SPEECH_CHUNKS) return null
+        if (cancelled || !started || speechChunks < MIN_SPEECH_CHUNKS) return null
 
         val floats = FloatArray(samples.size)
         for (index in samples.indices) {
@@ -198,6 +208,7 @@ class OfflineAsr(private val storage: AsrStorage) {
         private const val START_TIMEOUT_MS = 5000L
         private const val MAX_DURATION_MS = 12000L
         private const val MAX_SECONDS = 12
+        private const val REASON_CANCELLED = "cancelled"
         private const val REASON_NO_SPEECH = "no_speech"
         private const val REASON_PERMISSION = "permission_denied"
         private const val REASON_FAILED = "recognition_failed"
