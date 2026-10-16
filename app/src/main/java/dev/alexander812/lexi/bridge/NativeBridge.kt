@@ -1,5 +1,6 @@
 package dev.alexander812.lexi.bridge
 
+import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -7,11 +8,12 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import dev.alexander812.lexi.ocr.ScanOutcome
 import dev.alexander812.lexi.ocr.TextScanner
-import dev.alexander812.lexi.speech.ASR_ENTRY
+import dev.alexander812.lexi.speech.ASR_ENTRIES
 import dev.alexander812.lexi.speech.AsrManager
 import dev.alexander812.lexi.speech.RecognitionService
 import dev.alexander812.lexi.speech.RecognizeOutcome
@@ -19,6 +21,7 @@ import dev.alexander812.lexi.speech.SpeakOutcome
 import dev.alexander812.lexi.speech.SpeechService
 import dev.alexander812.lexi.speech.VOICE_CATALOG
 import dev.alexander812.lexi.speech.VoiceManager
+import dev.alexander812.lexi.speech.findAsrEntryById
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -73,6 +76,10 @@ class NativeBridge(
                 requestId,
                 runCatching { deviceInfo() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
             )
+            "keepScreenOn" -> respond(
+                requestId,
+                runCatching { keepScreenOn(params) }.getOrElse { errorResponse(it.message ?: "bridge_error") },
+            )
             "scanText" -> requestScan(requestId, params)
             "speak" -> requestSpeak(requestId, params)
             "recognizeSpeech" -> requestRecognize(requestId, params)
@@ -84,11 +91,8 @@ class NativeBridge(
                 requestId,
                 runCatching { asrStatus() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
             )
-            "deleteAsr" -> {
-                asr.delete()
-                recognition.onAsrDeleted()
-                respond(requestId, successResponse(JSONObject().put("deleted", true)))
-            }
+            "downloadAsr" -> requestAsrDownload(requestId, params)
+            "deleteAsr" -> requestAsrDelete(requestId, params)
             "ttsVoices" -> respond(
                 requestId,
                 runCatching { voicesInfo() }.getOrElse { errorResponse(it.message ?: "bridge_error") },
@@ -176,15 +180,51 @@ class NativeBridge(
     }
 
     private fun asrStatus(): JSONObject {
-        val state = asr.state()
-        return successResponse(
-            JSONObject()
-                .put("installed", asr.isInstalled())
-                .put("downloading", state.downloading)
-                .put("progress", state.progress.toDouble())
-                .put("error", state.error ?: JSONObject.NULL)
-                .put("sizeBytes", ASR_ENTRY.sizeBytes),
-        )
+        val array = JSONArray()
+        ASR_ENTRIES.forEach { entry ->
+            val state = asr.state(entry)
+            val languages = JSONArray()
+            entry.languages.sorted().forEach { languages.put(it) }
+            array.put(
+                JSONObject()
+                    .put("id", entry.id)
+                    .put("title", entry.title)
+                    .put("description", entry.description)
+                    .put("sizeBytes", entry.sizeBytes)
+                    .put("languages", languages)
+                    .put("installed", asr.isInstalled(entry))
+                    .put("downloading", state.downloading)
+                    .put("progress", state.progress.toDouble())
+                    .put("error", state.error ?: JSONObject.NULL),
+            )
+        }
+        return successResponse(JSONObject().put("artifacts", array))
+    }
+
+    private fun requestAsrDownload(requestId: String, params: JSONObject) {
+        val entry = findAsrEntryById(params.optString("id"))
+        if (entry == null) {
+            respond(requestId, errorResponse("unknown_artifact"))
+            return
+        }
+        asr.download(entry) { result ->
+            val response = result.fold(
+                onSuccess = { successResponse(JSONObject().put("installed", true)) },
+                onFailure = { errorResponse(it.message ?: "asr_download_failed") },
+            )
+            respond(requestId, response)
+        }
+    }
+
+    private fun requestAsrDelete(requestId: String, params: JSONObject) {
+        val entry = findAsrEntryById(params.optString("id"))
+        if (entry == null) {
+            respond(requestId, errorResponse("unknown_artifact"))
+            return
+        }
+        asr.delete(entry)
+        recognition.onAsrDeleted()
+        respond(requestId, successResponse(JSONObject().put("deleted", true)))
     }
 
     private fun voicesInfo(): JSONObject {
@@ -254,6 +294,20 @@ class NativeBridge(
             ),
         )
         return successResponse(JSONObject().put("vibratedMs", durationMs))
+    }
+
+    private fun keepScreenOn(params: JSONObject): JSONObject {
+        val enabled = params.optBoolean("enabled", false)
+        val activity = context as? Activity ?: return errorResponse("activity_unavailable")
+        activity.runOnUiThread {
+            if (enabled) {
+                activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            } else {
+                activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
+        Log.i(TAG, "keepScreenOn: $enabled")
+        return successResponse(JSONObject().put("enabled", enabled))
     }
 
     private fun deviceInfo(): JSONObject = successResponse(

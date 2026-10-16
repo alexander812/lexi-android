@@ -9,14 +9,21 @@ class AsrStorage(context: Context) {
 
     fun modelDir(entry: AsrEntry): File = File(root, entry.id)
 
-    fun modelFile(entry: AsrEntry): File = File(modelDir(entry), ASR_MODEL_FILE)
+    fun file(entry: AsrEntry, name: String): File = File(modelDir(entry), name)
 
-    fun tokensFile(entry: AsrEntry): File = File(modelDir(entry), ASR_TOKENS_FILE)
+    fun tokensFile(entry: AsrEntry): File = file(entry, entry.tokenFile)
 
-    fun isInstalled(entry: AsrEntry): Boolean =
-        modelFile(entry).length() > 0L && tokensFile(entry).length() > 0L
+    fun isInstalled(entry: AsrEntry): Boolean = entry.files.all { file(entry, it).length() > 0L }
 
     fun delete(entry: AsrEntry) {
         modelDir(entry).deleteRecursively()
+    }
+
+    fun cleanup() {
+        val known = ASR_ENTRIES.map { it.id }.toSet()
+
+        root.listFiles()?.forEach { item ->
+            if (item.name !in known) item.deleteRecursively()
+        }
     }
 }

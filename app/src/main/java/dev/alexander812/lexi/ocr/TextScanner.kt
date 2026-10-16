@@ -296,9 +296,6 @@ class TextScanner(private val activity: ComponentActivity) {
             "en" to "eng",
             "es" to "spa",
             "fr" to "fra",
-            "it" to "ita",
-            "de" to "deu",
-            "zh" to "chi_sim",
         )
     }
 }

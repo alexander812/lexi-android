@@ -1,15 +1,20 @@
 package dev.alexander812.lexi
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import dev.alexander812.lexi.bridge.NativeBridge
@@ -25,6 +30,7 @@ import dev.alexander812.lexi.speech.VoiceManager
 private const val ASSET_DOMAIN = "appassets.androidplatform.net"
 private const val LOCAL_START_URL = "https://$ASSET_DOMAIN/assets/www/index.html"
 private const val BACK_HANDLER_SCRIPT = "(window.__lexiBack && window.__lexiBack()) === true"
+private const val BACK_HANDLER_TIMEOUT_MS = 1500L
 
 class MainActivity : ComponentActivity() {
 
@@ -35,6 +41,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var recognition: RecognitionService
     private lateinit var asr: AsrManager
     private lateinit var voices: VoiceManager
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,9 +67,11 @@ class MainActivity : ComponentActivity() {
             .build()
 
         scanner = TextScanner(this)
-        voices = VoiceManager(this)
+        voices = VoiceManager.get(this)
+        voices.onDownloadStarted = { runOnUiThread { ensureNotificationPermission() } }
         speech = SpeechService(SpeechSynthesizer(this), voices, LocalTts(voices.storage()))
-        asr = AsrManager(this)
+        asr = AsrManager.get(this)
+        asr.onDownloadStarted = { runOnUiThread { ensureNotificationPermission() } }
         recognition = RecognitionService(this, OfflineAsr(asr.storage()), asr)
         webView.addJavascriptInterface(
             NativeBridge(this, webView, scanner, speech, recognition, asr, voices),
@@ -91,6 +103,7 @@ class MainActivity : ComponentActivity() {
                 if (handlingBack) return
 
                 handlingBack = true
+                webView.postDelayed({ handlingBack = false }, BACK_HANDLER_TIMEOUT_MS)
                 webView.evaluateJavascript(BACK_HANDLER_SCRIPT) { result ->
                     handlingBack = false
 
@@ -98,9 +111,8 @@ class MainActivity : ComponentActivity() {
 
                     if (webView.canGoBack()) {
                         webView.goBack()
-                    } else {
-                        isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
+                    } else if (!moveTaskToBack(true)) {
+                        finish()
                     }
                 }
             }
@@ -118,5 +130,14 @@ class MainActivity : ComponentActivity() {
         voices.release()
         webView.destroy()
         super.onDestroy()
+    }
+
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+
+        if (!granted) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }

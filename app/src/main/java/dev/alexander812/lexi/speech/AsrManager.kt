@@ -18,35 +18,41 @@ data class AsrState(
     val error: String? = null,
 )
 
-class AsrManager(context: Context) {
+class AsrManager private constructor(context: Context) {
 
     private val appContext = context.applicationContext
     private val storage = AsrStorage(appContext)
     private val executor = Executors.newSingleThreadExecutor()
-    private val listeners = mutableListOf<(Result<Unit>) -> Unit>()
-    private var state = AsrState()
+    private val listeners = mutableMapOf<String, MutableList<(Result<Unit>) -> Unit>>()
+    private val states = mutableMapOf<String, AsrState>()
+
+    var onDownloadStarted: (() -> Unit)? = null
 
     fun storage(): AsrStorage = storage
 
-    fun state(): AsrState = synchronized(this) { state }
+    fun state(entry: AsrEntry): AsrState = synchronized(this) { states[entry.id] ?: AsrState() }
 
-    fun isInstalled(): Boolean = storage.isInstalled(ASR_ENTRY)
+    fun isInstalled(entry: AsrEntry): Boolean = storage.isInstalled(entry)
 
-    fun download(onDone: (Result<Unit>) -> Unit) {
-        if (isInstalled()) {
+    fun isDownloading(): Boolean = synchronized(this) { states.values.any { it.downloading } }
+
+    fun download(entry: AsrEntry, onDone: (Result<Unit>) -> Unit) {
+        if (isInstalled(entry)) {
             onDone(Result.success(Unit))
             return
         }
         synchronized(this) {
-            if (state.downloading) {
-                listeners += onDone
+            if (states[entry.id]?.downloading == true) {
+                listeners.getOrPut(entry.id) { mutableListOf() } += onDone
                 return
             }
-            state = AsrState(downloading = true)
-            listeners += onDone
+            states[entry.id] = AsrState(downloading = true)
+            listeners.getOrPut(entry.id) { mutableListOf() } += onDone
         }
+        onDownloadStarted?.invoke()
         executor.execute {
-            val result = runCatching { fetchArchive() }
+            DownloadService.start(appContext)
+            val result = runCatching { fetchArchive(entry) }
             val delivered = result.fold(
                 onSuccess = { Result.success(Unit) },
                 onFailure = {
@@ -55,32 +61,38 @@ class AsrManager(context: Context) {
                 },
             )
             val callbacks = synchronized(this) {
-                state = if (result.isSuccess) AsrState() else AsrState(error = REASON_DOWNLOAD)
-                val pending = listeners.toList()
-                listeners.clear()
-                pending
+                states[entry.id] = if (result.isSuccess) AsrState() else AsrState(error = REASON_DOWNLOAD)
+                listeners.remove(entry.id).orEmpty()
             }
             callbacks.forEach { it(delivered) }
         }
     }
 
-    fun delete() {
-        storage.delete(ASR_ENTRY)
-        synchronized(this) { state = AsrState() }
+    fun delete(entry: AsrEntry) {
+        storage.delete(entry)
+        storage.cleanup()
+        synchronized(this) { states[entry.id] = AsrState() }
     }
 
     fun release() {
+        if (isDownloading()) return
+
         executor.shutdownNow()
+        synchronized(Companion) {
+            if (instance === this) instance = null
+        }
     }
 
-    private fun fetchArchive() {
-        val archive = File(appContext.cacheDir, "${ASR_ENTRY.id}.tar.bz2")
+    private fun fetchArchive(entry: AsrEntry) {
+        val archive = File(appContext.cacheDir, "${entry.id}.tar.bz2")
         try {
-            downloadFile(asrArchiveUrl(ASR_ENTRY), archive) { progress ->
-                synchronized(this) { state = state.copy(progress = progress) }
+            downloadFile(asrArchiveUrl(entry), archive) { progress ->
+                synchronized(this) {
+                    states[entry.id] = (states[entry.id] ?: AsrState()).copy(progress = progress)
+                }
             }
-            extract(archive)
-            if (!isInstalled()) throw IOException("asr_incomplete")
+            extract(entry, archive)
+            if (!isInstalled(entry)) throw IOException("asr_incomplete")
         } finally {
             archive.delete()
         }
@@ -123,8 +135,9 @@ class AsrManager(context: Context) {
         }
     }
 
-    private fun extract(archive: File) {
-        val target = storage.modelDir(ASR_ENTRY)
+    private fun extract(entry: AsrEntry, archive: File) {
+        storage.cleanup()
+        val target = storage.modelDir(entry)
         target.deleteRecursively()
         if (!target.mkdirs() && !target.isDirectory) throw IOException("storage_unavailable")
         val targetPath = target.canonicalPath + File.separator
@@ -134,7 +147,7 @@ class AsrManager(context: Context) {
                     val item = tar.nextEntry ?: break
                     if (!tar.canReadEntryData(item) || item.isDirectory) continue
                     val name = item.name.substringAfterLast('/')
-                    if (name != ASR_MODEL_FILE && name != ASR_TOKENS_FILE) continue
+                    if (name !in entry.files) continue
                     val file = File(target, name)
                     if (!file.canonicalPath.startsWith(targetPath)) throw IOException("bad_archive")
                     FileOutputStream(file).use { output -> tar.copyTo(output) }
@@ -144,6 +157,14 @@ class AsrManager(context: Context) {
     }
 
     companion object {
+        @Volatile
+        private var instance: AsrManager? = null
+
+        fun get(context: Context): AsrManager =
+            instance ?: synchronized(this) {
+                instance ?: AsrManager(context.applicationContext).also { instance = it }
+            }
+
         private const val TAG = "LexiAsr"
         private const val REASON_DOWNLOAD = "asr_download_failed"
         private const val USER_AGENT = "Lexi/1.0 (Android)"

@@ -9,6 +9,7 @@ import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import java.io.IOException
 import java.util.concurrent.Executors
 import kotlin.math.sqrt
@@ -17,11 +18,12 @@ class OfflineAsr(private val storage: AsrStorage) {
 
     private val executor = Executors.newSingleThreadExecutor()
     private var recognizer: OfflineRecognizer? = null
+    private var recognizerKey: String? = null
 
     @Volatile
     private var cancelled = false
 
-    fun listen(onOutcome: (RecognizeOutcome) -> Unit) {
+    fun listen(lang: String, onOutcome: (RecognizeOutcome) -> Unit) {
         cancelled = false
         executor.execute {
             val outcome = try {
@@ -31,7 +33,7 @@ class OfflineAsr(private val storage: AsrStorage) {
                 } else if (samples == null) {
                     RecognizeOutcome.Failure(REASON_NO_SPEECH)
                 } else {
-                    val text = decode(samples)
+                    val text = decode(samples, lang)
                     when {
                         cancelled -> RecognizeOutcome.Failure(REASON_CANCELLED)
                         text.isBlank() -> RecognizeOutcome.Failure(REASON_NO_SPEECH)
@@ -65,9 +67,10 @@ class OfflineAsr(private val storage: AsrStorage) {
         executor.shutdownNow()
     }
 
-    private fun decode(samples: FloatArray): String {
-        Log.i(TAG, "decoding ${samples.size} samples")
-        val instance = ensureRecognizer()
+    private fun decode(samples: FloatArray, lang: String): String {
+        val entry = resolveEntry(lang)
+        Log.i(TAG, "decoding ${samples.size} samples on $lang with ${entry.id}")
+        val instance = ensureRecognizer(entry, lang)
         val stream = instance.createStream()
         try {
             stream.acceptWaveform(samples, SAMPLE_RATE)
@@ -78,27 +81,57 @@ class OfflineAsr(private val storage: AsrStorage) {
         }
     }
 
-    @Synchronized
-    private fun ensureRecognizer(): OfflineRecognizer {
-        recognizer?.let { return it }
+    private fun resolveEntry(lang: String): AsrEntry {
+        val candidates = preferredAsrEntries(lang).ifEmpty { ASR_ENTRIES }
 
-        val dir = storage.modelDir(ASR_ENTRY).absolutePath
-        val config = OfflineRecognizerConfig(
-            featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = FEATURE_DIM),
-            modelConfig = OfflineModelConfig(
-                nemo = OfflineNemoEncDecCtcModelConfig(model = "$dir/$ASR_MODEL_FILE"),
-                tokens = "$dir/$ASR_TOKENS_FILE",
+        return candidates.firstOrNull { storage.isInstalled(it) } ?: candidates.first()
+    }
+
+    @Synchronized
+    private fun ensureRecognizer(entry: AsrEntry, lang: String): OfflineRecognizer {
+        val key = "${entry.id}:$lang"
+        val cached = recognizer
+
+        if (cached != null && recognizerKey == key) return cached
+
+        cached?.release()
+        recognizer = null
+
+        val dir = storage.modelDir(entry).absolutePath
+        val tokens = storage.tokensFile(entry).absolutePath
+        val modelConfig = when (entry.engine) {
+            AsrEngine.NEMO_CTC -> OfflineModelConfig(
+                nemo = OfflineNemoEncDecCtcModelConfig(
+                    model = storage.file(entry, entry.modelFile.orEmpty()).absolutePath,
+                ),
+                tokens = tokens,
                 numThreads = THREADS,
                 debug = false,
                 modelType = "nemo_ctc",
-            ),
+            )
+            AsrEngine.WHISPER -> OfflineModelConfig(
+                whisper = OfflineWhisperModelConfig(
+                    encoder = storage.file(entry, entry.encoderFile.orEmpty()).absolutePath,
+                    decoder = storage.file(entry, entry.decoderFile.orEmpty()).absolutePath,
+                    language = lang,
+                    task = "transcribe",
+                ),
+                tokens = tokens,
+                numThreads = THREADS,
+                debug = false,
+            )
+        }
+        val config = OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = FEATURE_DIM),
+            modelConfig = modelConfig,
             decodingMethod = "greedy_search",
         )
 
-        Log.i(TAG, "loading offline model from $dir")
+        Log.i(TAG, "loading offline model from $dir for $lang")
         val created = OfflineRecognizer(config = config)
         Log.i(TAG, "offline model loaded")
         recognizer = created
+        recognizerKey = key
 
         return created
     }

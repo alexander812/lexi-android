@@ -126,9 +126,6 @@ class SpeechSynthesizer(context: Context) {
             "en" to Locale("en", "US"),
             "es" to Locale("es", "ES"),
             "fr" to Locale("fr", "FR"),
-            "it" to Locale("it", "IT"),
-            "zh" to Locale.SIMPLIFIED_CHINESE,
-            "de" to Locale("de", "DE"),
         )
 
         private const val REASON_TEXT_REQUIRED = "text_required"

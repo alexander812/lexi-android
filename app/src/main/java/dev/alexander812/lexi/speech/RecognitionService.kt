@@ -55,10 +55,24 @@ class RecognitionService(
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
         override fun onResults(results: Bundle?) {
-            deliver(resultsOutcome(results))
+            val outcome = resultsOutcome(results)
+
+            if (outcome is RecognizeOutcome.Success && isForeignScript(outcome.transcript)) {
+                Log.i(TAG, "system recognition returned foreign script, retrying offline")
+                startOfflineModel()
+                return
+            }
+
+            deliver(outcome)
         }
 
         override fun onError(error: Int) {
+            if (isLanguageUnavailable(error)) {
+                Log.i(TAG, "system recognition language unavailable, retrying offline")
+                startOfflineModel()
+                return
+            }
+
             deliver(RecognizeOutcome.Failure(reasonFor(error)))
         }
     }
@@ -119,32 +133,43 @@ class RecognitionService(
             return
         }
 
-        if (pendingCode !in ASR_ENTRY.languages) {
+        startOfflineModel()
+    }
+
+    private fun startOfflineModel() {
+        if (pending == null) return
+
+        systemActive = false
+
+        val candidates = preferredAsrEntries(pendingCode)
+
+        if (candidates.isEmpty()) {
             deliver(RecognizeOutcome.Failure(REASON_LANGUAGE))
             return
         }
 
-        if (!asrManager.isInstalled()) {
-            Log.i(TAG, "offline model missing, downloading")
-            asrManager.download { result ->
-                activity.runOnUiThread {
-                    if (result.isSuccess && pending != null) {
-                        startOffline()
-                    } else {
-                        deliver(RecognizeOutcome.Failure(result.exceptionOrNull()?.message ?: REASON_DOWNLOAD))
-                    }
-                }
-            }
+        if (candidates.any { asrManager.isInstalled(it) }) {
+            startOffline()
             return
         }
 
-        startOffline()
+        val entry = candidates.first()
+        Log.i(TAG, "offline model missing, downloading ${entry.id}")
+        asrManager.download(entry) { result ->
+            activity.runOnUiThread {
+                if (result.isSuccess && pending != null) {
+                    startOffline()
+                } else {
+                    deliver(RecognizeOutcome.Failure(result.exceptionOrNull()?.message ?: REASON_DOWNLOAD))
+                }
+            }
+        }
     }
 
     private fun startOffline() {
         Log.i(TAG, "offline recognition started: $pendingCode")
         systemActive = false
-        asr.listen { outcome ->
+        asr.listen(pendingCode) { outcome ->
             activity.runOnUiThread { deliver(outcome) }
         }
     }
@@ -170,6 +195,39 @@ class RecognitionService(
     private fun isOnDeviceAvailable(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(activity)
+
+    private fun isLanguageUnavailable(error: Int): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
+
+    private fun isForeignScript(text: String): Boolean {
+        val expected = expectedScript() ?: return false
+        val actual = dominantScript(text) ?: return false
+
+        return actual != expected
+    }
+
+    private fun expectedScript(): String? = when (pendingCode) {
+        "ru" -> SCRIPT_CYRILLIC
+        "en", "es", "fr" -> SCRIPT_LATIN
+        else -> null
+    }
+
+    private fun dominantScript(text: String): String? {
+        var latin = 0
+        var cyrillic = 0
+
+        text.forEach { char ->
+            when {
+                char in 'a'..'z' || char in 'A'..'Z' -> latin += 1
+                char in 'а'..'я' || char in 'А'..'Я' || char == 'ё' || char == 'Ё' -> cyrillic += 1
+            }
+        }
+
+        if (latin + cyrillic == 0) return null
+
+        return if (cyrillic >= latin) SCRIPT_CYRILLIC else SCRIPT_LATIN
+    }
 
     private fun hasPermission(): Boolean =
         ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
@@ -234,6 +292,8 @@ class RecognitionService(
         private const val TAG = "RecognitionService"
         private const val DEFAULT_LOCALE = "en-US"
         private const val MAX_RESULTS = 3
+        private const val SCRIPT_CYRILLIC = "cyrillic"
+        private const val SCRIPT_LATIN = "latin"
         private const val REASON_BUSY = "busy"
         private const val REASON_CANCELLED = "cancelled"
         private const val REASON_DOWNLOAD = "asr_download_failed"
@@ -244,13 +304,10 @@ class RecognitionService(
         private const val REASON_PERMISSION = "permission_denied"
 
         private val LOCALES = mapOf(
-            "de" to "de-DE",
             "en" to "en-US",
             "es" to "es-ES",
             "fr" to "fr-FR",
-            "it" to "it-IT",
             "ru" to "ru-RU",
-            "zh" to "zh-CN",
         )
 
         private fun reasonFor(error: Int): String = when (error) {

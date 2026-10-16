@@ -20,13 +20,15 @@ data class VoiceState(
     val error: String? = null,
 )
 
-class VoiceManager(context: Context) {
+class VoiceManager private constructor(context: Context) {
 
     private val appContext = context.applicationContext
     private val storage = VoiceStorage(appContext)
     private val executor = Executors.newSingleThreadExecutor()
     private val states = ConcurrentHashMap<String, VoiceState>()
     private val listeners = ConcurrentHashMap<String, MutableList<(Result<Unit>) -> Unit>>()
+
+    var onDownloadStarted: (() -> Unit)? = null
 
     fun state(lang: String): VoiceState = states[lang] ?: VoiceState()
 
@@ -51,7 +53,9 @@ class VoiceManager(context: Context) {
         }
         states[lang] = VoiceState(downloading = true)
         addListener(lang, onDone)
+        onDownloadStarted?.invoke()
         executor.execute {
+            DownloadService.start(appContext)
             val result = runCatching {
                 ensureSharedData()
                 fetchVoice(entry) { progress ->
@@ -78,7 +82,12 @@ class VoiceManager(context: Context) {
     }
 
     fun release() {
+        if (states.values.any { it.downloading }) return
+
         executor.shutdownNow()
+        synchronized(Companion) {
+            if (instance === this) instance = null
+        }
     }
 
     private fun addListener(lang: String, onDone: (Result<Unit>) -> Unit) {
@@ -225,6 +234,14 @@ class VoiceManager(context: Context) {
     }
 
     companion object {
+        @Volatile
+        private var instance: VoiceManager? = null
+
+        fun get(context: Context): VoiceManager =
+            instance ?: synchronized(this) {
+                instance ?: VoiceManager(context.applicationContext).also { instance = it }
+            }
+
         private const val TAG = "LexiVoice"
         private const val USER_AGENT = "Lexi/1.0 (Android)"
         private const val ESPEAK_ASSET = "tts/espeak-ng-data.zip"
