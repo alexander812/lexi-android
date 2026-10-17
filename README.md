@@ -64,6 +64,27 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 
 Без `keystore.properties` release собирается неподписанным (`app-release-unsigned.apk`) — на телефон его не установить. Ключ и пароли не терять: обновления приложения подписываются тем же ключом.
 
+## Публикация APK в GitHub Releases
+
+После успешной сборки `:app:assembleRelease` подписанный APK автоматически загружается в
+GitHub Releases репозитория `alexander812/lexi-android` как asset `lexi-android.apk`. Тег релиза —
+`v<versionName>-<versionCode>` (например, `v1.5-6`), название — `Lexi Android v1.5 (6)`.
+Если релиз с таким тегом уже существует, старый asset заменяется новым.
+
+Постоянная ссылка для лендинга:
+
+```
+https://github.com/alexander812/lexi-android/releases/latest/download/lexi-android.apk
+```
+
+- Собрать без публикации: `-PskipApkPublish=true`.
+- Опубликовать уже собранный APK без пересборки: `./gradlew :app:publishApkToGitHub`.
+- Собрать и опубликовать одной командой: `./gradlew :app:publishReleaseApk`.
+- Скрипт публикации: `scripts/publish-release-apk.sh`; можно задать `--repo`, `--tag`, `--name`, `--apk`.
+- Токен берётся из `GH_TOKEN`/`GITHUB_TOKEN` или из git credential helper. Нужно право
+  `Contents: Read and write` (для classic PAT — scope `repo`).
+- GitHub Releases принимает файлы до 2 ГиБ; APK около 95 МБ. В git-историю репозитория он не попадает.
+
 ## URL веб-приложения
 
 Настраивается в `app/webview.properties`:

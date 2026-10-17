@@ -83,3 +83,28 @@ dependencies {
     implementation(libs.commons.compress)
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
 }
+
+val skipApkPublish = providers.gradleProperty("skipApkPublish")
+    .map(String::toBoolean)
+    .orElse(false)
+
+val publishApkToGitHub = tasks.register<Exec>("publishApkToGitHub") {
+    group = "publishing"
+    description = "Загружает release APK в GitHub Releases."
+
+    workingDir = rootProject.projectDir
+    commandLine("bash", rootProject.file("scripts/publish-release-apk.sh").absolutePath)
+    standardOutput = System.out
+    errorOutput = System.err
+    onlyIf { !skipApkPublish.get() }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(publishApkToGitHub)
+}
+
+tasks.register("publishReleaseApk") {
+    group = "publishing"
+    description = "Собирает release APK и загружает его в GitHub Releases."
+    dependsOn("assembleRelease")
+}
