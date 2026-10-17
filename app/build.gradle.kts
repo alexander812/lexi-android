@@ -100,11 +100,28 @@ val publishApkToGitHub = tasks.register<Exec>("publishApkToGitHub") {
 }
 
 tasks.matching { it.name == "assembleRelease" }.configureEach {
-    finalizedBy(publishApkToGitHub)
+    doLast {
+        if (skipApkPublish.get()) return@doLast
+
+        val result = providers.exec {
+            workingDir = rootProject.projectDir
+            commandLine("bash", rootProject.file("scripts/publish-release-apk.sh").absolutePath)
+            standardOutput = System.out
+            errorOutput = System.err
+        }.result.get()
+
+        if (result.exitValue != 0) {
+            throw GradleException("Не удалось опубликовать APK (exit ${result.exitValue}).")
+        }
+    }
+}
+
+publishApkToGitHub.configure {
+    mustRunAfter("assembleRelease")
 }
 
 tasks.register("publishReleaseApk") {
     group = "publishing"
     description = "Собирает release APK и загружает его в GitHub Releases."
-    dependsOn("assembleRelease")
+    dependsOn("assembleRelease", publishApkToGitHub)
 }
