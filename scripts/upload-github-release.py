@@ -111,6 +111,35 @@ def upload_asset(upload_url: str, token: str, apk_path: str, asset_name: str) ->
         return {}
 
 
+def dispatch_landing(
+    dispatch_repo: str, token: str, tag: str, asset_url: str, release_name: str
+) -> None:
+    if not dispatch_repo:
+        return
+
+    status, result = api_request(
+        "POST",
+        f"{API}/repos/{dispatch_repo}/dispatches",
+        token,
+        {
+            "event_type": "android-apk-updated",
+            "client_payload": {
+                "tag": tag,
+                "asset_url": asset_url,
+                "release_name": release_name,
+            },
+        },
+    )
+    if status not in (204, 200):
+        print(
+            "Не удалось запустить деплой лендинга "
+            f"({dispatch_repo}): HTTP {status}: {result.get('message', result)}",
+            file=sys.stderr,
+        )
+        return
+    print(f"Запущен деплой лендинга: {dispatch_repo}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True, help="owner/repo")
@@ -120,6 +149,7 @@ def main() -> None:
     parser.add_argument("--asset-name", default="lexi-android.apk")
     parser.add_argument("--body", default="")
     parser.add_argument("--target-commitish", default="")
+    parser.add_argument("--dispatch-repo", default="")
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -201,22 +231,24 @@ def main() -> None:
             )
         print(f"Удалён старый asset: {args.asset_name}")
 
+    latest_url = (
+        f"https://github.com/{args.repo}/releases/latest/download/{args.asset_name}"
+    )
+
     if kept_asset is not None:
         print("APK уже загружен и совпадает по SHA-256 — upload пропущен.")
         print(f"Размер: {kept_asset.get('size')} байт")
-        print(
-            "Постоянная ссылка: "
-            f"https://github.com/{args.repo}/releases/latest/download/{args.asset_name}"
+        print(f"Постоянная ссылка: {latest_url}")
+        dispatch_landing(
+            args.dispatch_repo, token, args.tag, latest_url, args.name
         )
         return
 
     asset = upload_asset(release["upload_url"], token, args.apk, args.asset_name)
-    latest_url = (
-        f"https://github.com/{args.repo}/releases/latest/download/{args.asset_name}"
-    )
     print(f"Загружен asset: {asset.get('browser_download_url')}")
     print(f"Размер: {asset.get('size')} байт")
     print(f"Постоянная ссылка: {latest_url}")
+    dispatch_landing(args.dispatch_repo, token, args.tag, latest_url, args.name)
 
 
 if __name__ == "__main__":

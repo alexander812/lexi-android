@@ -64,23 +64,36 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradle
 
 Без `keystore.properties` release собирается неподписанным (`app-release-unsigned.apk`) — на телефон его не установить. Ключ и пароли не терять: обновления приложения подписываются тем же ключом.
 
-## Публикация APK в GitHub Releases
+## Публикация APK и обновление лендинга
 
 После успешной сборки `:app:assembleRelease` подписанный APK автоматически загружается в
 GitHub Releases репозитория `alexander812/lexi-android` как asset `lexi-android.apk`. Тег релиза —
 `v<versionName>-<versionCode>` (например, `v1.5-6`), название — `Lexi Android v1.5 (6)`.
 Если релиз с таким тегом уже существует, старый asset заменяется новым.
 
-Постоянная ссылка для лендинга:
+Хранилище в GitHub Releases:
 
 ```
 https://github.com/alexander812/lexi-android/releases/latest/download/lexi-android.apk
 ```
 
+Но лендинг ссылается не сюда, а на свой домен:
+
+```
+https://lexi.casa/downloads/lexi-android.apk
+```
+
+Workflow `lexi-home` при деплое скачивает последний asset из GitHub Releases в
+`public/downloads/lexi-android.apk` и раздаёт его через GitHub Pages вместе с сайтом. Поэтому браузер
+пользователя не обращается к `release-assets.githubusercontent.com`. После загрузки APK скрипт
+отправляет `repository_dispatch` (`android-apk-updated`) в `lexi-home`; workflow скачивает свежий APK
+и передеплоит лендинг.
+
 - Собрать без публикации: `-PskipApkPublish=true`.
 - Опубликовать уже собранный APK без пересборки: `./gradlew :app:publishApkToGitHub`.
 - Собрать и опубликовать одной командой: `./gradlew :app:publishReleaseApk`.
 - Скрипт публикации: `scripts/publish-release-apk.sh`; можно задать `--repo`, `--tag`, `--name`, `--apk`.
+  Флаг `--no-dispatch` загружает APK, но не запускает деплой лендинга.
 - Токен берётся из `GH_TOKEN`/`GITHUB_TOKEN` или из git credential helper. Нужно право
   `Contents: Read and write` (для classic PAT — scope `repo`).
 - GitHub Releases принимает файлы до 2 ГиБ; APK около 95 МБ. В git-историю репозитория он не попадает.

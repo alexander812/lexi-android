@@ -7,20 +7,23 @@ ASSET_NAME="lexi-android.apk"
 REPO="${GITHUB_REPOSITORY:-}"
 TAG=""
 RELEASE_NAME=""
+DISPATCH_REPO="${LEXI_HOME_REPO:-alexander812/lexi-home}"
 
 usage() {
     cat <<'EOF'
-Публикует собранный release APK в GitHub Releases и обновляет asset
-lexi-android.apk в релизе текущей версии.
+Публикует собранный release APK в GitHub Releases и запускает деплой лендинга
+в репозитории lexi-home.
 
 Использование: scripts/publish-release-apk.sh [опции]
 
 Опции:
-  --apk <path>       другой путь к APK
-  --repo <owner/repo> репозиторий (по умолчанию — origin текущего репозитория)
-  --tag <tag>        тег релиза (по умолчанию v<versionName>-<versionCode>)
-  --name <name>      название релиза
-  -h, --help         показать эту справку
+  --apk <path>            другой путь к APK
+  --repo <owner/repo>     репозиторий (по умолчанию — origin текущего репозитория)
+  --tag <tag>             тег релиза (по умолчанию v<versionName>-<versionCode>)
+  --name <name>           название релиза
+  --dispatch-repo <repo>  репозиторий лендинга (по умолчанию alexander812/lexi-home)
+  --no-dispatch           не запускать деплой лендинга
+  -h, --help              показать эту справку
 
 Для доступа к GitHub API нужен токен с правом Contents: Read and write.
 Токен берётся из GH_TOKEN/GITHUB_TOKEN или из git credential helper.
@@ -44,6 +47,13 @@ while [[ $# -gt 0 ]]; do
         --name)
             RELEASE_NAME="${2:?--name требует значение}"
             shift
+            ;;
+        --dispatch-repo)
+            DISPATCH_REPO="${2:?--dispatch-repo требует owner/repo}"
+            shift
+            ;;
+        --no-dispatch)
+            DISPATCH_REPO=""
             ;;
         -h|--help)
             usage
@@ -127,4 +137,5 @@ python3 "$ROOT_DIR/scripts/upload-github-release.py" \
     --apk "$APK_PATH" \
     --asset-name "$ASSET_NAME" \
     --body "Release APK для Lexi Android ${VERSION_NAME} (versionCode ${VERSION_CODE})." \
-    --target-commitish "$TARGET_COMMITISH"
+    --target-commitish "$TARGET_COMMITISH" \
+    --dispatch-repo "$DISPATCH_REPO"
