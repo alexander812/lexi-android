@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -58,6 +59,14 @@ def api_request(method: str, url: str, token: str, payload: dict | None = None):
         except json.JSONDecodeError:
             message = body
         return error.code, {"message": message}
+
+
+def file_digest(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        while chunk := file.read(1024 * 1024):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def upload_asset(upload_url: str, token: str, apk_path: str, asset_name: str) -> dict:
@@ -168,15 +177,38 @@ def main() -> None:
     else:
         die(f"Не удалось найти релиз {args.tag}: HTTP {status}: {release.get('message', release)}")
 
-    for asset in release.get("assets", []):
-        if asset.get("name") == args.asset_name:
-            status, result = api_request("DELETE", asset["url"], token)
-            if status not in (204, 200):
-                die(
-                    f"Не удалось удалить старый {args.asset_name}: "
-                    f"HTTP {status}: {result.get('message', result)}"
-                )
-            print(f"Удалён старый asset: {args.asset_name}")
+    local_digest = file_digest(args.apk)
+    matching_assets = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name") == args.asset_name
+    ]
+
+    kept_asset = None
+    for asset in matching_assets:
+        if (
+            kept_asset is None
+            and asset.get("state") == "uploaded"
+            and asset.get("digest") == local_digest
+        ):
+            kept_asset = asset
+            continue
+        status, result = api_request("DELETE", asset["url"], token)
+        if status not in (204, 200):
+            die(
+                f"Не удалось удалить старый {args.asset_name}: "
+                f"HTTP {status}: {result.get('message', result)}"
+            )
+        print(f"Удалён старый asset: {args.asset_name}")
+
+    if kept_asset is not None:
+        print("APK уже загружен и совпадает по SHA-256 — upload пропущен.")
+        print(f"Размер: {kept_asset.get('size')} байт")
+        print(
+            "Постоянная ссылка: "
+            f"https://github.com/{args.repo}/releases/latest/download/{args.asset_name}"
+        )
+        return
 
     asset = upload_asset(release["upload_url"], token, args.apk, args.asset_name)
     latest_url = (
